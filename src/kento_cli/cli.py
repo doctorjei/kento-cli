@@ -14,11 +14,16 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--version", action="version", version=f"kento {__version__}")
     sub = parser.add_subparsers(dest="command")
 
-    # create
-    p_create = sub.add_parser("create", help="Create container from OCI image")
-    p_create.add_argument("name")
-    p_create.add_argument("--image", required=True, help="OCI image name")
-    p_create.add_argument("--bridge", default=None, help="Network bridge (default: vmbr0 for PVE, lxcbr0 for LXC)")
+    # -- container subcommand group --
+    p_container = sub.add_parser("container", help="Manage containers")
+    container_sub = p_container.add_subparsers(dest="subcommand")
+
+    # container create
+    p_create = container_sub.add_parser("create", help="Create container from OCI image")
+    p_create.add_argument("image", help="OCI image name")
+    p_create.add_argument("--name", default=None, help="Container name (auto-generated if omitted)")
+    p_create.add_argument("--bridge", default=None,
+                          help="Network bridge (default: vmbr0 for PVE, lxcbr0 for LXC)")
     p_create.add_argument("--memory", type=int, default=0, help="Memory limit in MB (default: no limit)")
     p_create.add_argument("--cores", type=int, default=0, help="CPU cores (default: no limit)")
     p_create.add_argument("--nesting", action=argparse.BooleanOptionalAction, default=True,
@@ -31,16 +36,24 @@ def main(argv: list[str] | None = None) -> None:
                             help="Force plain LXC mode")
     p_create.add_argument("--vmid", type=int, default=0, help="PVE VMID (auto-assigned if omitted)")
 
-    # destroy
-    p_destroy = sub.add_parser("destroy", help="Destroy a container")
-    p_destroy.add_argument("name")
+    # container start
+    p_start = container_sub.add_parser("start", help="Start a container")
+    p_start.add_argument("name")
 
-    # list
-    sub.add_parser("list", help="List kento-managed containers")
+    # container stop
+    p_stop = container_sub.add_parser("stop", help="Stop a container")
+    p_stop.add_argument("name")
 
-    # reset
-    p_reset = sub.add_parser("reset", help="Reset container to clean OCI state")
+    # container rm
+    p_rm = container_sub.add_parser("rm", help="Remove a container")
+    p_rm.add_argument("name")
+
+    # container reset
+    p_reset = container_sub.add_parser("reset", help="Reset container to clean OCI state")
     p_reset.add_argument("name")
+
+    # container list
+    container_sub.add_parser("list", help="List kento-managed containers")
 
     args = parser.parse_args(argv)
 
@@ -48,20 +61,36 @@ def main(argv: list[str] | None = None) -> None:
         parser.print_help()
         sys.exit(0)
 
-    if args.command == "create":
-        from kento.create import create
-        create(args.name, args.image, bridge=args.bridge, memory=args.memory,
-               cores=args.cores, nesting=args.nesting, start=args.start,
-               mode=args.mode, vmid=args.vmid)
+    if args.command == "container":
+        if args.subcommand is None:
+            p_container.print_help()
+            sys.exit(0)
+        _dispatch_container(args)
 
-    elif args.command == "destroy":
+
+def _dispatch_container(args) -> None:
+    if args.subcommand == "create":
+        from kento.create import create
+        create(args.image, name=args.name, bridge=args.bridge,
+               memory=args.memory, cores=args.cores, nesting=args.nesting,
+               start=args.start, mode=args.mode, vmid=args.vmid)
+
+    elif args.subcommand == "start":
+        from kento.start import start
+        start(args.name)
+
+    elif args.subcommand == "stop":
+        from kento.stop import stop
+        stop(args.name)
+
+    elif args.subcommand == "rm":
         from kento.destroy import destroy
         destroy(args.name)
 
-    elif args.command == "list":
+    elif args.subcommand == "list":
         from kento.list import list_containers
         list_containers()
 
-    elif args.command == "reset":
+    elif args.subcommand == "reset":
         from kento.reset import reset
         reset(args.name)
