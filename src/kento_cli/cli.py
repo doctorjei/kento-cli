@@ -18,12 +18,18 @@ def main(argv: list[str] | None = None) -> None:
     p_create = sub.add_parser("create", help="Create container from OCI image")
     p_create.add_argument("name")
     p_create.add_argument("--image", required=True, help="OCI image name")
-    p_create.add_argument("--bridge", default="lxcbr0", help="Network bridge (default: lxcbr0)")
+    p_create.add_argument("--bridge", default=None, help="Network bridge (default: vmbr0 for PVE, lxcbr0 for LXC)")
     p_create.add_argument("--memory", type=int, default=0, help="Memory limit in MB (default: no limit)")
     p_create.add_argument("--cores", type=int, default=0, help="CPU cores (default: no limit)")
     p_create.add_argument("--nesting", action=argparse.BooleanOptionalAction, default=True,
                           help="Enable LXC nesting (default: on)")
     p_create.add_argument("--start", action="store_true", help="Start container after creation")
+    mode_group = p_create.add_mutually_exclusive_group()
+    mode_group.add_argument("--pve", action="store_const", const="pve", dest="mode",
+                            help="Force PVE mode")
+    mode_group.add_argument("--lxc", action="store_const", const="lxc", dest="mode",
+                            help="Force plain LXC mode")
+    p_create.add_argument("--vmid", type=int, default=0, help="PVE VMID (auto-assigned if omitted)")
 
     # destroy
     p_destroy = sub.add_parser("destroy", help="Destroy a container")
@@ -45,7 +51,8 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "create":
         from kento.create import create
         create(args.name, args.image, bridge=args.bridge, memory=args.memory,
-               cores=args.cores, nesting=args.nesting, start=args.start)
+               cores=args.cores, nesting=args.nesting, start=args.start,
+               mode=args.mode, vmid=args.vmid)
 
     elif args.command == "destroy":
         from kento.destroy import destroy
