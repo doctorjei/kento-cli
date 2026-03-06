@@ -34,7 +34,11 @@ def main(argv: list[str] | None = None) -> None:
                             help="Force PVE mode")
     mode_group.add_argument("--lxc", action="store_const", const="lxc", dest="mode",
                             help="Force plain LXC mode")
+    mode_group.add_argument("--vm", action="store_const", const="vm", dest="mode",
+                            help="Force VM mode (QEMU + virtiofs)")
     p_create.add_argument("--vmid", type=int, default=0, help="PVE VMID (auto-assigned if omitted)")
+    p_create.add_argument("--port", default=None,
+                          help="Port forwarding host:guest (VM mode, default: auto:22)")
 
     # container start
     p_start = container_sub.add_parser("start", help="Start a container")
@@ -73,7 +77,8 @@ def _dispatch_container(args) -> None:
         from kento.create import create
         create(args.image, name=args.name, bridge=args.bridge,
                memory=args.memory, cores=args.cores, nesting=args.nesting,
-               start=args.start, mode=args.mode, vmid=args.vmid)
+               start=args.start, mode=args.mode, vmid=args.vmid,
+               port=args.port)
 
     elif args.subcommand == "start":
         from kento.start import start
