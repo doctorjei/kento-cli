@@ -99,3 +99,7 @@ def _dispatch_container(args) -> None:
     elif args.subcommand == "reset":
         from kento.reset import reset
         reset(args.name)
+
+
+if __name__ == "__main__":
+    main()
