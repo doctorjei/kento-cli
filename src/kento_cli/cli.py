@@ -45,6 +45,12 @@ def main(argv: list[str] | None = None) -> None:
                           help="Default gateway (requires --ip)")
     p_create.add_argument("--dns", default=None,
                           help="DNS server (requires --ip)")
+    p_create.add_argument("--searchdomain", default=None,
+                          help="DNS search domain")
+    p_create.add_argument("--timezone", default=None,
+                          help="Timezone (e.g. Europe/Berlin)")
+    p_create.add_argument("--env", action="append", default=None,
+                          help="Environment variable KEY=VALUE (repeatable)")
 
     # container start
     p_start = container_sub.add_parser("start", help="Start one or more containers")
@@ -88,7 +94,8 @@ def _dispatch_container(args) -> None:
                memory=args.memory, cores=args.cores, nesting=args.nesting,
                start=args.start, mode=args.mode, vmid=args.vmid,
                port=args.port, ip=args.ip, gateway=args.gateway,
-               dns=args.dns)
+               dns=args.dns, searchdomain=args.searchdomain,
+               timezone=args.timezone, env=args.env)
 
     elif args.subcommand in ("start", "stop", "rm", "reset"):
         errors = 0
