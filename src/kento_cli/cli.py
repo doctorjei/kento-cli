@@ -39,6 +39,12 @@ def main(argv: list[str] | None = None) -> None:
     p_create.add_argument("--vmid", type=int, default=0, help="PVE VMID (auto-assigned if omitted)")
     p_create.add_argument("--port", default=None,
                           help="Port forwarding host:guest for VM mode (default: auto-assign)")
+    p_create.add_argument("--ip", default=None,
+                          help="Static IP address with prefix (e.g. 192.168.0.160/22)")
+    p_create.add_argument("--gateway", default=None,
+                          help="Default gateway (requires --ip)")
+    p_create.add_argument("--dns", default=None,
+                          help="DNS server (requires --ip)")
 
     # container start
     p_start = container_sub.add_parser("start", help="Start one or more containers")
@@ -81,7 +87,8 @@ def _dispatch_container(args) -> None:
         create(args.image, name=args.name, bridge=args.bridge,
                memory=args.memory, cores=args.cores, nesting=args.nesting,
                start=args.start, mode=args.mode, vmid=args.vmid,
-               port=args.port)
+               port=args.port, ip=args.ip, gateway=args.gateway,
+               dns=args.dns)
 
     elif args.subcommand in ("start", "stop", "rm", "reset"):
         errors = 0
