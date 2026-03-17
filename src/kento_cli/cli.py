@@ -6,26 +6,17 @@ import sys
 from kento import __version__
 
 
-def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(
-        prog="kento",
-        description="Compose OCI images into system containers via overlayfs.",
-    )
-    parser.add_argument("--version", action="version", version=f"kento {__version__}")
-    sub = parser.add_subparsers(dest="command")
+def _add_commands(subparser) -> None:
+    """Register all subcommands onto a given argparse subparser.
 
-    # -- container subcommand group --
-    p_container = sub.add_parser("container", help="Manage containers")
-    container_sub = p_container.add_subparsers(dest="subcommand")
-
-    # container create
-    p_create = container_sub.add_parser("create", help="Create a container from an OCI image")
+    Called three times: once for top-level, once under 'container', once under 'vm'.
+    """
+    # create
+    p_create = subparser.add_parser("create", help="Create a container from an OCI image")
     p_create.add_argument("image", help="OCI image reference")
     p_create.add_argument("--name", default=None, help="Container name (auto-generated if omitted)")
     p_create.add_argument("--bridge", default=None,
-                          help="Network bridge (default: vmbr0 for PVE, lxcbr0 for LXC)")
-    p_create.add_argument("--memory", type=int, default=0, help="Memory limit in MB (default: no limit)")
-    p_create.add_argument("--cores", type=int, default=0, help="CPU cores (default: no limit)")
+                          help="Network bridge (no networking if omitted)")
     p_create.add_argument("--nesting", action=argparse.BooleanOptionalAction, default=True,
                           help="Enable LXC nesting (default: on)")
     p_create.add_argument("--start", action="store_true", help="Start after creation")
@@ -51,28 +42,64 @@ def main(argv: list[str] | None = None) -> None:
                           help="Timezone (e.g. Europe/Berlin)")
     p_create.add_argument("--env", action="append", default=None,
                           help="Environment variable KEY=VALUE (repeatable)")
+    p_create.add_argument("--force", action="store_true",
+                          help="Allow creating with a name that exists in the other namespace")
 
-    # container start
-    p_start = container_sub.add_parser("start", help="Start one or more containers")
+    # start
+    p_start = subparser.add_parser("start", help="Start one or more containers")
     p_start.add_argument("name", nargs="+", metavar="CONTAINER", help="Container name(s)")
 
-    # container stop
-    p_stop = container_sub.add_parser("stop", help="Stop one or more containers")
-    p_stop.add_argument("name", nargs="+", metavar="CONTAINER", help="Container name(s)")
+    # shutdown (with stop as alias)
+    p_shutdown = subparser.add_parser("shutdown", help="Gracefully shut down one or more containers")
+    p_shutdown.add_argument("name", nargs="+", metavar="CONTAINER", help="Container name(s)")
+    p_shutdown.add_argument("-f", "--force", action="store_true",
+                            help="Force immediate stop (kill)")
 
-    # container rm
-    p_rm = container_sub.add_parser("rm", help="Remove one or more containers")
+    p_stop = subparser.add_parser("stop", help="Stop one or more containers (alias for shutdown)")
+    p_stop.add_argument("name", nargs="+", metavar="CONTAINER", help="Container name(s)")
+    p_stop.add_argument("-f", "--force", action="store_true",
+                        help="Force immediate stop (kill)")
+
+    # destroy (primary) + rm (alias)
+    p_destroy = subparser.add_parser("destroy", help="Remove one or more containers")
+    p_destroy.add_argument("name", nargs="+", metavar="CONTAINER", help="Container name(s)")
+    p_destroy.add_argument("-f", "--force", action="store_true",
+                           help="Force removal of running containers")
+
+    p_rm = subparser.add_parser("rm", help="Remove one or more containers (alias for destroy)")
     p_rm.add_argument("name", nargs="+", metavar="CONTAINER", help="Container name(s)")
     p_rm.add_argument("-f", "--force", action="store_true",
                       help="Force removal of running containers")
 
-    # container reset
-    p_reset = container_sub.add_parser("reset", help="Reset one or more containers to clean OCI state")
-    p_reset.add_argument("name", nargs="+", metavar="CONTAINER", help="Container name(s)")
+    # scrub
+    p_scrub = subparser.add_parser("scrub", help="Scrub one or more containers back to clean OCI state")
+    p_scrub.add_argument("name", nargs="+", metavar="CONTAINER", help="Container name(s)")
 
-    # container list (with ls alias)
-    container_sub.add_parser("list", help="List containers")
-    container_sub.add_parser("ls", help="List containers")
+    # list (with ls alias)
+    subparser.add_parser("list", help="List containers")
+    subparser.add_parser("ls", help="List containers")
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(
+        prog="kento",
+        description="Compose OCI images into system containers via overlayfs.",
+    )
+    parser.add_argument("--version", action="version", version=f"kento {__version__}")
+    top_sub = parser.add_subparsers(dest="command")
+
+    # -- Top-level bare commands (kento create, kento start, ...) --
+    _add_commands(top_sub)
+
+    # -- container subcommand group (kento container create, ...) --
+    p_container = top_sub.add_parser("container", help="Manage containers")
+    container_sub = p_container.add_subparsers(dest="subcommand")
+    _add_commands(container_sub)
+
+    # -- vm subcommand group (kento vm create, ...) --
+    p_vm = top_sub.add_parser("vm", help="Manage VMs")
+    vm_sub = p_vm.add_subparsers(dest="subcommand")
+    _add_commands(vm_sub)
 
     args = parser.parse_args(argv)
 
@@ -80,47 +107,101 @@ def main(argv: list[str] | None = None) -> None:
         parser.print_help()
         sys.exit(0)
 
-    if args.command == "container":
-        if args.subcommand is None:
-            p_container.print_help()
+    # Determine scope and effective subcommand
+    if args.command in ("container", "vm"):
+        scope = args.command
+        subcmd = getattr(args, "subcommand", None)
+        if subcmd is None:
+            (p_container if scope == "container" else p_vm).print_help()
             sys.exit(0)
-        _dispatch_container(args)
+    else:
+        scope = None
+        subcmd = args.command
+        # For bare commands, subcommand attr may not exist; set it for dispatch
+        args.subcommand = subcmd
+
+    _dispatch(args, scope, subcmd)
 
 
-def _dispatch_container(args) -> None:
-    if args.subcommand == "create":
-        from kento.create import create
-        create(args.image, name=args.name, bridge=args.bridge,
-               memory=args.memory, cores=args.cores, nesting=args.nesting,
-               start=args.start, mode=args.mode, vmid=args.vmid,
-               port=args.port, ip=args.ip, gateway=args.gateway,
-               dns=args.dns, searchdomain=args.searchdomain,
-               timezone=args.timezone, env=args.env)
+def _dispatch(args, scope: str | None, subcmd: str) -> None:
+    """Dispatch a command with the given scope (None, 'container', or 'vm')."""
+    if subcmd == "create":
+        _dispatch_create(args, scope)
+    elif subcmd in ("start", "shutdown", "stop", "destroy", "rm", "scrub"):
+        _dispatch_multi(args, scope, subcmd)
+    elif subcmd in ("list", "ls"):
+        _dispatch_list(args, scope)
 
-    elif args.subcommand in ("start", "stop", "rm", "reset"):
-        errors = 0
-        for container_name in args.name:
-            try:
-                if args.subcommand == "start":
-                    from kento.start import start
-                    start(container_name)
-                elif args.subcommand == "stop":
-                    from kento.stop import stop
-                    stop(container_name)
-                elif args.subcommand == "rm":
-                    from kento.destroy import destroy
-                    destroy(container_name, force=args.force)
-                elif args.subcommand == "reset":
-                    from kento.reset import reset
-                    reset(container_name)
-            except SystemExit:
-                errors += 1
-        if errors:
+
+def _dispatch_create(args, scope: str | None) -> None:
+    from kento.create import create
+
+    # Determine the effective mode
+    mode = args.mode
+    if scope == "vm" and mode is None:
+        # kento vm create => force VM mode
+        mode = "vm"
+
+    # Name conflict check (only when --name is given and --force is not)
+    if args.name and not args.force:
+        from kento import check_name_conflict
+        target_ns = "vm" if mode == "vm" else "container"
+        if check_name_conflict(args.name, target_ns):
+            other = "VM" if target_ns == "container" else "container"
+            print(
+                f"Name '{args.name}' already exists as a {other}. "
+                "Use --force to allow duplicate names "
+                "(requires explicit 'kento container' or 'kento vm' for all commands).",
+                file=sys.stderr,
+            )
             sys.exit(1)
 
-    elif args.subcommand in ("list", "ls"):
-        from kento.list import list_containers
-        list_containers()
+    create(args.image, name=args.name, bridge=args.bridge,
+           nesting=args.nesting,
+           start=args.start, mode=mode, vmid=args.vmid,
+           port=args.port, ip=args.ip, gateway=args.gateway,
+           dns=args.dns, searchdomain=args.searchdomain,
+           timezone=args.timezone, env=args.env)
+
+
+def _dispatch_multi(args, scope: str | None, subcmd: str) -> None:
+    errors = 0
+    for container_name in args.name:
+        try:
+            if scope is None:
+                from kento import resolve_any
+                container_dir, mode = resolve_any(container_name)
+            elif scope == "container":
+                from kento import resolve_in_namespace
+                container_dir = resolve_in_namespace(container_name, "container")
+                mode_file = container_dir / "kento-mode"
+                mode = mode_file.read_text().strip() if mode_file.is_file() else "lxc"
+            else:  # scope == "vm"
+                from kento import resolve_in_namespace
+                container_dir = resolve_in_namespace(container_name, "vm")
+                mode = "vm"
+
+            if subcmd == "start":
+                from kento.start import start
+                start(container_name)
+            elif subcmd in ("shutdown", "stop"):
+                from kento.stop import shutdown
+                shutdown(container_name, force=args.force)
+            elif subcmd in ("destroy", "rm"):
+                from kento.destroy import destroy
+                destroy(container_name, force=args.force)
+            elif subcmd == "scrub":
+                from kento.reset import reset
+                reset(container_name)
+        except SystemExit:
+            errors += 1
+    if errors:
+        sys.exit(1)
+
+
+def _dispatch_list(args, scope: str | None) -> None:
+    from kento.list import list_containers
+    list_containers(scope=scope)
 
 
 if __name__ == "__main__":
