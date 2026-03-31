@@ -15,8 +15,8 @@ def _add_commands(subparser) -> None:
     p_create = subparser.add_parser("create", help="Create a container from an OCI image")
     p_create.add_argument("image", help="OCI image reference")
     p_create.add_argument("--name", default=None, help="Container name (auto-generated if omitted)")
-    p_create.add_argument("--bridge", default=None,
-                          help="Network bridge (no networking if omitted)")
+    p_create.add_argument("--network", default=None,
+                          help="Network mode: bridge, bridge=<name>, host, usermode, none")
     p_create.add_argument("--nesting", action=argparse.BooleanOptionalAction, default=True,
                           help="Enable LXC nesting (default: on)")
     p_create.add_argument("--start", action="store_true", help="Start after creation")
@@ -133,6 +133,39 @@ def _dispatch(args, scope: str | None, subcmd: str) -> None:
         _dispatch_list(args, scope)
 
 
+def _parse_network(network_str: str | None, mode: str | None) -> tuple[str | None, str | None]:
+    """Parse --network flag into (net_type, bridge_name).
+
+    Returns (None, None) if no --network was given (auto-detect later).
+    """
+    if network_str is None:
+        return None, None
+
+    if network_str == "none":
+        return "none", None
+    if network_str == "host":
+        if mode == "vm":
+            print("Error: --network host is not supported in VM mode", file=sys.stderr)
+            sys.exit(1)
+        return "host", None
+    if network_str == "usermode":
+        if mode not in ("vm", None):  # None = bare command, might be VM
+            print("Error: --network usermode is only supported in VM mode", file=sys.stderr)
+            sys.exit(1)
+        return "usermode", None
+    if network_str == "bridge":
+        return "bridge", None  # auto-detect bridge name later
+    if network_str.startswith("bridge="):
+        bridge_name = network_str.split("=", 1)[1]
+        if not bridge_name:
+            print("Error: --network bridge=<name> requires a bridge name", file=sys.stderr)
+            sys.exit(1)
+        return "bridge", bridge_name
+
+    print(f"Error: unknown network mode: {network_str}", file=sys.stderr)
+    sys.exit(1)
+
+
 def _dispatch_create(args, scope: str | None) -> None:
     from kento.create import create
 
@@ -156,12 +189,21 @@ def _dispatch_create(args, scope: str | None) -> None:
             )
             sys.exit(1)
 
-    create(args.image, name=args.name, bridge=args.bridge,
+    # Parse and validate --network
+    net_type, bridge_name = _parse_network(getattr(args, 'network', None), mode)
+
+    # Validate --port + bridge conflict
+    if args.port and net_type == "bridge":
+        print("Error: --port cannot be used with --network bridge", file=sys.stderr)
+        sys.exit(1)
+
+    create(args.image, name=args.name, bridge=bridge_name,
            nesting=args.nesting,
            start=args.start, mode=mode, vmid=args.vmid,
            port=args.port, ip=args.ip, gateway=args.gateway,
            dns=args.dns, searchdomain=args.searchdomain,
-           timezone=args.timezone, env=args.env)
+           timezone=args.timezone, env=args.env,
+           net_type=net_type)
 
 
 def _dispatch_multi(args, scope: str | None, subcmd: str) -> None:
