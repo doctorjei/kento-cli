@@ -214,10 +214,9 @@ def _dispatch_multi(args, scope: str | None, subcmd: str) -> None:
                 from kento import resolve_any
                 container_dir, mode = resolve_any(container_name)
             elif scope == "container":
-                from kento import resolve_in_namespace
+                from kento import read_mode, resolve_in_namespace
                 container_dir = resolve_in_namespace(container_name, "container")
-                mode_file = container_dir / "kento-mode"
-                mode = mode_file.read_text().strip() if mode_file.is_file() else "lxc"
+                mode = read_mode(container_dir)
             else:  # scope == "vm"
                 from kento import resolve_in_namespace
                 container_dir = resolve_in_namespace(container_name, "vm")
@@ -225,16 +224,16 @@ def _dispatch_multi(args, scope: str | None, subcmd: str) -> None:
 
             if subcmd == "start":
                 from kento.start import start
-                start(container_name)
+                start(container_name, container_dir=container_dir, mode=mode)
             elif subcmd in ("shutdown", "stop"):
                 from kento.stop import shutdown
-                shutdown(container_name, force=args.force)
+                shutdown(container_name, force=args.force, container_dir=container_dir, mode=mode)
             elif subcmd in ("destroy", "rm"):
                 from kento.destroy import destroy
-                destroy(container_name, force=args.force)
+                destroy(container_name, force=args.force, container_dir=container_dir, mode=mode)
             elif subcmd == "scrub":
                 from kento.reset import reset
-                reset(container_name)
+                reset(container_name, container_dir=container_dir, mode=mode)
         except SystemExit:
             errors += 1
     if errors:
