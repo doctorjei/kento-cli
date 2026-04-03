@@ -6,6 +6,40 @@ import sys
 from kento import __version__
 
 
+def _add_create_args(parser) -> None:
+    """Add the common arguments shared by 'create' and 'run' subcommands."""
+    parser.add_argument("image", help="OCI image reference")
+    parser.add_argument("--name", default=None, help="Container name (auto-generated if omitted)")
+    parser.add_argument("--network", default=None,
+                        help="Network mode: bridge, bridge=<name>, host, usermode, none")
+    parser.add_argument("--nesting", action=argparse.BooleanOptionalAction, default=True,
+                        help="Enable LXC nesting (default: on)")
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument("--pve", action="store_const", const="pve", dest="mode",
+                            help="Force PVE mode")
+    mode_group.add_argument("--lxc", action="store_const", const="lxc", dest="mode",
+                            help="Force plain LXC mode")
+    mode_group.add_argument("--vm", action="store_const", const="vm", dest="mode",
+                            help="Force VM mode (QEMU + virtiofs)")
+    parser.add_argument("--vmid", type=int, default=0, help="PVE VMID (auto-assigned if omitted)")
+    parser.add_argument("--port", default=None,
+                        help="Port forwarding host:guest for VM mode (default: auto-assign)")
+    parser.add_argument("--ip", default=None,
+                        help="Static IP address with prefix (e.g. 192.168.0.160/22)")
+    parser.add_argument("--gateway", default=None,
+                        help="Default gateway (requires --ip)")
+    parser.add_argument("--dns", default=None,
+                        help="DNS server (requires --ip)")
+    parser.add_argument("--searchdomain", default=None,
+                        help="DNS search domain")
+    parser.add_argument("--timezone", default=None,
+                        help="Timezone (e.g. Europe/Berlin)")
+    parser.add_argument("--env", action="append", default=None,
+                        help="Environment variable KEY=VALUE (repeatable)")
+    parser.add_argument("--force", action="store_true",
+                        help="Allow creating with a name that exists in the other namespace")
+
+
 def _add_commands(subparser) -> None:
     """Register all subcommands onto a given argparse subparser.
 
@@ -13,37 +47,12 @@ def _add_commands(subparser) -> None:
     """
     # create
     p_create = subparser.add_parser("create", help="Create a container from an OCI image")
-    p_create.add_argument("image", help="OCI image reference")
-    p_create.add_argument("--name", default=None, help="Container name (auto-generated if omitted)")
-    p_create.add_argument("--network", default=None,
-                          help="Network mode: bridge, bridge=<name>, host, usermode, none")
-    p_create.add_argument("--nesting", action=argparse.BooleanOptionalAction, default=True,
-                          help="Enable LXC nesting (default: on)")
+    _add_create_args(p_create)
     p_create.add_argument("--start", action="store_true", help="Start after creation")
-    mode_group = p_create.add_mutually_exclusive_group()
-    mode_group.add_argument("--pve", action="store_const", const="pve", dest="mode",
-                            help="Force PVE mode")
-    mode_group.add_argument("--lxc", action="store_const", const="lxc", dest="mode",
-                            help="Force plain LXC mode")
-    mode_group.add_argument("--vm", action="store_const", const="vm", dest="mode",
-                            help="Force VM mode (QEMU + virtiofs)")
-    p_create.add_argument("--vmid", type=int, default=0, help="PVE VMID (auto-assigned if omitted)")
-    p_create.add_argument("--port", default=None,
-                          help="Port forwarding host:guest for VM mode (default: auto-assign)")
-    p_create.add_argument("--ip", default=None,
-                          help="Static IP address with prefix (e.g. 192.168.0.160/22)")
-    p_create.add_argument("--gateway", default=None,
-                          help="Default gateway (requires --ip)")
-    p_create.add_argument("--dns", default=None,
-                          help="DNS server (requires --ip)")
-    p_create.add_argument("--searchdomain", default=None,
-                          help="DNS search domain")
-    p_create.add_argument("--timezone", default=None,
-                          help="Timezone (e.g. Europe/Berlin)")
-    p_create.add_argument("--env", action="append", default=None,
-                          help="Environment variable KEY=VALUE (repeatable)")
-    p_create.add_argument("--force", action="store_true",
-                          help="Allow creating with a name that exists in the other namespace")
+
+    # run (create + start)
+    p_run = subparser.add_parser("run", help="Create and start a container from an OCI image")
+    _add_create_args(p_run)
 
     # start
     p_start = subparser.add_parser("start", help="Start one or more containers")
@@ -75,6 +84,22 @@ def _add_commands(subparser) -> None:
     p_scrub = subparser.add_parser("scrub", help="Scrub one or more containers back to clean OCI state")
     p_scrub.add_argument("name", nargs="+", metavar="CONTAINER", help="Container name(s)")
 
+    # info (with inspect alias)
+    p_info = subparser.add_parser("info", help="Show container details")
+    p_info.add_argument("name", metavar="CONTAINER", help="Container name")
+    p_info.add_argument("--json", action="store_true", dest="as_json",
+                         help="JSON output")
+    p_info.add_argument("-v", "--verbose", action="store_true",
+                         help="Show layer sizes and paths")
+
+    p_inspect = subparser.add_parser("inspect",
+                                      help="Show container details (alias for info)")
+    p_inspect.add_argument("name", metavar="CONTAINER", help="Container name")
+    p_inspect.add_argument("--json", action="store_true", dest="as_json",
+                            help="JSON output")
+    p_inspect.add_argument("-v", "--verbose", action="store_true",
+                            help="Show layer sizes and paths")
+
     # list (with ls alias)
     subparser.add_parser("list", help="List containers")
     subparser.add_parser("ls", help="List containers")
@@ -90,6 +115,10 @@ def main(argv: list[str] | None = None) -> None:
 
     # -- Top-level bare commands (kento create, kento start, ...) --
     _add_commands(top_sub)
+
+    # -- Top-level-only commands (not in container/vm subgroups) --
+    p_pull = top_sub.add_parser("pull", help="Pull an OCI image")
+    p_pull.add_argument("image", help="OCI image reference")
 
     # -- container subcommand group (kento container create, ...) --
     p_container = top_sub.add_parser("container", help="Manage containers")
@@ -127,10 +156,17 @@ def _dispatch(args, scope: str | None, subcmd: str) -> None:
     """Dispatch a command with the given scope (None, 'container', or 'vm')."""
     if subcmd == "create":
         _dispatch_create(args, scope)
+    elif subcmd == "run":
+        args.start = True  # run always starts
+        _dispatch_create(args, scope)
     elif subcmd in ("start", "shutdown", "stop", "destroy", "rm", "scrub"):
         _dispatch_multi(args, scope, subcmd)
+    elif subcmd in ("info", "inspect"):
+        _dispatch_info(args, scope)
     elif subcmd in ("list", "ls"):
         _dispatch_list(args, scope)
+    elif subcmd == "pull":
+        _dispatch_pull(args)
 
 
 def _parse_network(network_str: str | None, mode: str | None) -> tuple[str | None, str | None]:
@@ -240,9 +276,39 @@ def _dispatch_multi(args, scope: str | None, subcmd: str) -> None:
         sys.exit(1)
 
 
+def _dispatch_info(args, scope: str | None) -> None:
+    from kento import require_root
+    require_root()
+
+    if scope is None:
+        from kento import resolve_any
+        container_dir, mode = resolve_any(args.name)
+    elif scope == "container":
+        from kento import read_mode, resolve_in_namespace
+        container_dir = resolve_in_namespace(args.name, "container")
+        mode = read_mode(container_dir)
+    else:  # scope == "vm"
+        from kento import read_mode, resolve_in_namespace
+        container_dir = resolve_in_namespace(args.name, "vm")
+        mode = read_mode(container_dir, "vm")
+
+    from kento.info import info
+    info(args.name, container_dir=container_dir, mode=mode,
+         as_json=args.as_json, verbose=args.verbose)
+
+
 def _dispatch_list(args, scope: str | None) -> None:
     from kento.list import list_containers
     list_containers(scope=scope)
+
+
+def _dispatch_pull(args) -> None:
+    from kento import require_root
+    require_root()
+    import subprocess
+    result = subprocess.run(["podman", "pull", args.image])
+    if result.returncode != 0:
+        sys.exit(result.returncode)
 
 
 if __name__ == "__main__":
