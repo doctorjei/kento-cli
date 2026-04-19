@@ -36,6 +36,9 @@ def _add_create_args(parser) -> None:
                         help="Timezone (e.g. Europe/Berlin)")
     parser.add_argument("--env", action="append", default=None,
                         help="Environment variable KEY=VALUE (repeatable)")
+    parser.add_argument("--ssh-key", action="append", default=None,
+                        dest="ssh_keys",
+                        help="Path to a file with SSH public keys (repeatable)")
     parser.add_argument("--force", action="store_true",
                         help="Allow creating with a name that exists in the other namespace")
 
@@ -239,6 +242,7 @@ def _dispatch_create(args, scope: str | None) -> None:
            port=args.port, ip=args.ip, gateway=args.gateway,
            dns=args.dns, searchdomain=args.searchdomain,
            timezone=args.timezone, env=args.env,
+           ssh_keys=args.ssh_keys,
            net_type=net_type)
 
 
