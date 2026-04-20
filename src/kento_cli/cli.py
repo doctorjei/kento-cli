@@ -52,6 +52,13 @@ def _add_create_args(parser) -> None:
     parser.add_argument("--ssh-key-user", default="root",
                         dest="ssh_key_user",
                         help="User whose authorized_keys receives injected SSH keys (default: root)")
+    host_key_group = parser.add_mutually_exclusive_group()
+    host_key_group.add_argument("--ssh-host-keys", action="store_true",
+                                default=False, dest="ssh_host_keys",
+                                help="Auto-generate SSH host key pairs at create time")
+    host_key_group.add_argument("--ssh-host-key-dir", default=None,
+                                dest="ssh_host_key_dir",
+                                help="Path to directory with SSH host keys to copy")
     parser.add_argument("--mac", default=None, type=_validate_mac,
                         help="Override the auto-generated MAC address (VM modes only, "
                              "format: XX:XX:XX:XX:XX:XX)")
@@ -260,6 +267,8 @@ def _dispatch_create(args, scope: str | None) -> None:
            timezone=args.timezone, env=args.env,
            ssh_keys=args.ssh_keys,
            ssh_key_user=args.ssh_key_user,
+           ssh_host_keys=args.ssh_host_keys,
+           ssh_host_key_dir=args.ssh_host_key_dir,
            mac=args.mac,
            net_type=net_type)
 
