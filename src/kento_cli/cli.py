@@ -6,6 +6,16 @@ import sys
 from kento import __version__
 
 
+def _validate_mac(value: str) -> str:
+    """argparse type validator for --mac. Accepts any valid 6-pair hex MAC."""
+    from kento.vm import is_valid_mac
+    if not is_valid_mac(value):
+        raise argparse.ArgumentTypeError(
+            f"invalid MAC address: {value!r} (expected XX:XX:XX:XX:XX:XX)"
+        )
+    return value
+
+
 def _add_create_args(parser) -> None:
     """Add the common arguments shared by 'create' and 'run' subcommands."""
     parser.add_argument("image", help="OCI image reference")
@@ -39,6 +49,9 @@ def _add_create_args(parser) -> None:
     parser.add_argument("--ssh-key", action="append", default=None,
                         dest="ssh_keys",
                         help="Path to a file with SSH public keys (repeatable)")
+    parser.add_argument("--mac", default=None, type=_validate_mac,
+                        help="Override the auto-generated MAC address (VM modes only, "
+                             "format: XX:XX:XX:XX:XX:XX)")
     parser.add_argument("--force", action="store_true",
                         help="Allow creating with a name that exists in the other namespace")
 
@@ -243,6 +256,7 @@ def _dispatch_create(args, scope: str | None) -> None:
            dns=args.dns, searchdomain=args.searchdomain,
            timezone=args.timezone, env=args.env,
            ssh_keys=args.ssh_keys,
+           mac=args.mac,
            net_type=net_type)
 
 
