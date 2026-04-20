@@ -49,6 +49,9 @@ def _add_create_args(parser) -> None:
     parser.add_argument("--ssh-key", action="append", default=None,
                         dest="ssh_keys",
                         help="Path to a file with SSH public keys (repeatable)")
+    parser.add_argument("--ssh-key-user", default="root",
+                        dest="ssh_key_user",
+                        help="User whose authorized_keys receives injected SSH keys (default: root)")
     parser.add_argument("--mac", default=None, type=_validate_mac,
                         help="Override the auto-generated MAC address (VM modes only, "
                              "format: XX:XX:XX:XX:XX:XX)")
@@ -256,6 +259,7 @@ def _dispatch_create(args, scope: str | None) -> None:
            dns=args.dns, searchdomain=args.searchdomain,
            timezone=args.timezone, env=args.env,
            ssh_keys=args.ssh_keys,
+           ssh_key_user=args.ssh_key_user,
            mac=args.mac,
            net_type=net_type)
 
