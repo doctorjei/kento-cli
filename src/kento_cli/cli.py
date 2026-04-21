@@ -62,6 +62,10 @@ def _add_create_args(parser) -> None:
     parser.add_argument("--mac", default=None, type=_validate_mac,
                         help="Override the auto-generated MAC address (VM modes only, "
                              "format: XX:XX:XX:XX:XX:XX)")
+    parser.add_argument("--config-mode", default="auto",
+                        choices=["injection", "cloudinit", "auto"],
+                        dest="config_mode",
+                        help="Config delivery: injection (file writes), cloudinit (NoCloud seed), auto (detect)")
     parser.add_argument("--force", action="store_true",
                         help="Allow creating with a name that exists in the other namespace")
 
@@ -273,6 +277,7 @@ def _dispatch_create(args, scope: str | None) -> None:
            ssh_host_keys=args.ssh_host_keys,
            ssh_host_key_dir=args.ssh_host_key_dir,
            mac=args.mac,
+           config_mode=args.config_mode,
            net_type=net_type)
 
 
