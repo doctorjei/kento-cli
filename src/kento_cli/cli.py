@@ -33,7 +33,7 @@ def _add_create_args(parser) -> None:
                             help="Force VM mode (QEMU + virtiofs)")
     parser.add_argument("--vmid", type=int, default=0, help="PVE VMID (auto-assigned if omitted)")
     parser.add_argument("--port", default=None,
-                        help="Port forwarding host:guest for VM mode (default: auto-assign)")
+                        help="Port forwarding host:guest (e.g. 10022:22)")
     parser.add_argument("--ip", default=None,
                         help="Static IP address with prefix (e.g. 192.168.0.160/22)")
     parser.add_argument("--gateway", default=None,
@@ -254,9 +254,12 @@ def _dispatch_create(args, scope: str | None) -> None:
     # Parse and validate --network
     net_type, bridge_name = _parse_network(getattr(args, 'network', None), mode)
 
-    # Validate --port + bridge conflict
-    if args.port and net_type == "bridge":
-        print("Error: --port cannot be used with --network bridge", file=sys.stderr)
+    # Validate --port + network combinations (mode-aware)
+    # For VM: --port + bridge is invalid (usermode only)
+    # For LXC/PVE: --port REQUIRES bridge (iptables DNAT to container IP)
+    if args.port and net_type in ("host", "none"):
+        print("Error: --port cannot be used with --network host or --network none",
+              file=sys.stderr)
         sys.exit(1)
 
     create(args.image, name=args.name, bridge=bridge_name,
