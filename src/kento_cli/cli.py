@@ -19,19 +19,18 @@ def _validate_mac(value: str) -> str:
 def _add_create_args(parser) -> None:
     """Add the common arguments shared by 'create' and 'run' subcommands."""
     parser.add_argument("image", help="OCI image reference")
-    parser.add_argument("--name", default=None, help="Container name (auto-generated if omitted)")
+    parser.add_argument("--name", default=None, help="Instance name (auto-generated if omitted)")
     parser.add_argument("--network", default=None,
                         help="Network mode: bridge, bridge=<name>, host, usermode, none")
     parser.add_argument("--nesting", action=argparse.BooleanOptionalAction, default=True,
                         help="Enable LXC nesting (default: on)")
-    mode_group = parser.add_mutually_exclusive_group()
-    mode_group.add_argument("--pve", action="store_const", const="pve", dest="mode",
-                            help="Force PVE mode")
-    mode_group.add_argument("--lxc", action="store_const", const="lxc", dest="mode",
-                            help="Force plain LXC mode")
-    mode_group.add_argument("--vm", action="store_const", const="vm", dest="mode",
-                            help="Force VM mode (QEMU + virtiofs)")
+    parser.add_argument("--pve", action=argparse.BooleanOptionalAction, default=None,
+                        help="Force or prevent PVE integration (default: auto-detect)")
     parser.add_argument("--vmid", type=int, default=0, help="PVE VMID (auto-assigned if omitted)")
+    parser.add_argument("--memory", type=int, default=None,
+                        help="Memory in MB (default: 512 for VM, unset for LXC)")
+    parser.add_argument("--cores", type=int, default=None,
+                        help="Number of CPU cores (default: 1 for VM, unset for LXC)")
     parser.add_argument("--port", default=None,
                         help="Port forwarding host:guest (e.g. 10022:22)")
     parser.add_argument("--ip", default=None,
@@ -70,124 +69,190 @@ def _add_create_args(parser) -> None:
                         help="Allow creating with a name that exists in the other namespace")
 
 
-def _add_commands(subparser) -> None:
-    """Register all subcommands onto a given argparse subparser.
+def _add_commands(subparser, include_create: bool = True) -> None:
+    """Register subcommands onto a given argparse subparser.
 
-    Called three times: once for top-level, once under 'container', once under 'vm'.
+    When include_create is False, create and run are omitted (for top-level shortcuts).
     """
-    # create
-    p_create = subparser.add_parser("create", help="Create a container from an OCI image")
-    _add_create_args(p_create)
-    p_create.add_argument("--start", action="store_true", help="Start after creation")
+    if include_create:
+        p_create = subparser.add_parser("create", help="Create an instance from an OCI image")
+        _add_create_args(p_create)
+        p_create.add_argument("--start", action="store_true", help="Start after creation")
 
-    # run (create + start)
-    p_run = subparser.add_parser("run", help="Create and start a container from an OCI image")
-    _add_create_args(p_run)
+        p_run = subparser.add_parser("run", help="Create and start an instance from an OCI image")
+        _add_create_args(p_run)
 
-    # start
-    p_start = subparser.add_parser("start", help="Start one or more containers")
-    p_start.add_argument("name", nargs="+", metavar="CONTAINER", help="Container name(s)")
+    p_start = subparser.add_parser("start", help="Start one or more instances")
+    p_start.add_argument("name", nargs="+", metavar="NAME", help="Instance name(s)")
 
-    # shutdown (with stop as alias)
-    p_shutdown = subparser.add_parser("shutdown", help="Gracefully shut down one or more containers")
-    p_shutdown.add_argument("name", nargs="+", metavar="CONTAINER", help="Container name(s)")
+    p_shutdown = subparser.add_parser("shutdown", help="Gracefully shut down one or more instances")
+    p_shutdown.add_argument("name", nargs="+", metavar="NAME", help="Instance name(s)")
     p_shutdown.add_argument("-f", "--force", action="store_true",
                             help="Force immediate stop (kill)")
 
-    p_stop = subparser.add_parser("stop", help="Stop one or more containers (alias for shutdown)")
-    p_stop.add_argument("name", nargs="+", metavar="CONTAINER", help="Container name(s)")
+    p_stop = subparser.add_parser("stop", help="Stop one or more instances (alias for shutdown)")
+    p_stop.add_argument("name", nargs="+", metavar="NAME", help="Instance name(s)")
     p_stop.add_argument("-f", "--force", action="store_true",
                         help="Force immediate stop (kill)")
 
-    # destroy (primary) + rm (alias)
-    p_destroy = subparser.add_parser("destroy", help="Remove one or more containers")
-    p_destroy.add_argument("name", nargs="+", metavar="CONTAINER", help="Container name(s)")
+    p_destroy = subparser.add_parser("destroy", help="Remove one or more instances")
+    p_destroy.add_argument("name", nargs="+", metavar="NAME", help="Instance name(s)")
     p_destroy.add_argument("-f", "--force", action="store_true",
-                           help="Force removal of running containers")
+                           help="Force removal of running instances")
 
-    p_rm = subparser.add_parser("rm", help="Remove one or more containers (alias for destroy)")
-    p_rm.add_argument("name", nargs="+", metavar="CONTAINER", help="Container name(s)")
+    p_rm = subparser.add_parser("rm", help="Remove one or more instances (alias for destroy)")
+    p_rm.add_argument("name", nargs="+", metavar="NAME", help="Instance name(s)")
     p_rm.add_argument("-f", "--force", action="store_true",
-                      help="Force removal of running containers")
+                      help="Force removal of running instances")
 
-    # scrub
-    p_scrub = subparser.add_parser("scrub", help="Scrub one or more containers back to clean OCI state")
-    p_scrub.add_argument("name", nargs="+", metavar="CONTAINER", help="Container name(s)")
+    p_scrub = subparser.add_parser("scrub", help="Scrub one or more instances back to clean OCI state")
+    p_scrub.add_argument("name", nargs="+", metavar="NAME", help="Instance name(s)")
 
-    # info (with inspect alias)
-    p_info = subparser.add_parser("info", help="Show container details")
-    p_info.add_argument("name", metavar="CONTAINER", help="Container name")
+    p_info = subparser.add_parser("info", help="Show instance details")
+    p_info.add_argument("name", metavar="NAME", help="Instance name")
     p_info.add_argument("--json", action="store_true", dest="as_json",
                          help="JSON output")
     p_info.add_argument("-v", "--verbose", action="store_true",
                          help="Show layer sizes and paths")
 
     p_inspect = subparser.add_parser("inspect",
-                                      help="Show container details (alias for info)")
-    p_inspect.add_argument("name", metavar="CONTAINER", help="Container name")
+                                      help="Show instance details (alias for info)")
+    p_inspect.add_argument("name", metavar="NAME", help="Instance name")
     p_inspect.add_argument("--json", action="store_true", dest="as_json",
                             help="JSON output")
     p_inspect.add_argument("-v", "--verbose", action="store_true",
                             help="Show layer sizes and paths")
 
-    # list (with ls alias)
-    subparser.add_parser("list", help="List containers")
-    subparser.add_parser("ls", help="List containers")
+    subparser.add_parser("list", help="List instances")
+    subparser.add_parser("ls", help="List instances")
+
+
+def _build_top_help() -> str:
+    return """\
+usage: kento [--version] [-h] <command>
+
+Compose OCI images into LXC system containers or QEMU VMs via overlayfs.
+
+Commands:
+  lxc                 Manage LXC instances
+  vm                  Manage VM instances
+
+Shortcuts:
+  list, ls            List all instances
+  start               Start instances
+  stop, shutdown      Stop instances
+  destroy, rm         Remove instances
+  scrub               Scrub instances to clean OCI state
+  info, inspect       Show instance details
+  pull                Pull an OCI image
+
+Options:
+  --version           Show version and exit
+  -h, --help          Show this help message and exit
+"""
+
+
+def _build_lxc_help() -> str:
+    return """\
+usage: kento lxc [-h] <subcommand>
+
+Manage LXC instances.
+
+Subcommands:
+  create              Create an LXC instance from an OCI image
+  run                 Create and start an LXC instance
+  list, ls            List LXC instances
+  start               Start LXC instances
+  stop, shutdown      Stop LXC instances
+  destroy, rm         Remove LXC instances
+  scrub               Scrub LXC instances to clean OCI state
+  info, inspect       Show LXC instance details
+
+Options:
+  -h, --help          Show this help message and exit
+"""
+
+
+def _build_vm_help() -> str:
+    return """\
+usage: kento vm [-h] <subcommand>
+
+Manage VM instances.
+
+Subcommands:
+  create              Create a VM instance from an OCI image
+  run                 Create and start a VM instance
+  list, ls            List VM instances
+  start               Start VM instances
+  stop, shutdown      Stop VM instances
+  destroy, rm         Remove VM instances
+  scrub               Scrub VM instances to clean OCI state
+  info, inspect       Show VM instance details
+
+Options:
+  -h, --help          Show this help message and exit
+"""
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="kento",
-        description="Compose OCI images into system containers via overlayfs.",
+        description="Compose OCI images into LXC system containers or QEMU VMs via overlayfs.",
+        add_help=False,
     )
     parser.add_argument("--version", action="version", version=f"kento {__version__}")
+    parser.add_argument("-h", "--help", action="store_true", dest="help")
     top_sub = parser.add_subparsers(dest="command")
 
-    # -- Top-level bare commands (kento create, kento start, ...) --
-    _add_commands(top_sub)
+    # -- Top-level shortcuts (no create/run) --
+    _add_commands(top_sub, include_create=False)
 
-    # -- Top-level-only commands (not in container/vm subgroups) --
+    # -- Top-level-only commands (not in lxc/vm subgroups) --
     p_pull = top_sub.add_parser("pull", help="Pull an OCI image")
     p_pull.add_argument("image", help="OCI image reference")
 
-    # -- container subcommand group (kento container create, ...) --
-    p_container = top_sub.add_parser("container", help="Manage containers")
-    container_sub = p_container.add_subparsers(dest="subcommand")
-    _add_commands(container_sub)
+    # -- lxc subcommand group (kento lxc create, ...) --
+    p_lxc = top_sub.add_parser("lxc", help="Manage LXC instances")
+    p_lxc.format_help = _build_lxc_help
+    lxc_sub = p_lxc.add_subparsers(dest="subcommand")
+    _add_commands(lxc_sub)
 
     # -- vm subcommand group (kento vm create, ...) --
-    p_vm = top_sub.add_parser("vm", help="Manage VMs")
+    p_vm = top_sub.add_parser("vm", help="Manage VM instances")
+    p_vm.format_help = _build_vm_help
     vm_sub = p_vm.add_subparsers(dest="subcommand")
     _add_commands(vm_sub)
 
     args = parser.parse_args(argv)
 
-    if args.command is None:
-        parser.print_help()
+    if getattr(args, "help", False) or args.command is None:
+        print(_build_top_help(), end="")
         sys.exit(0)
 
     # Determine scope and effective subcommand
-    if args.command in ("container", "vm"):
+    if args.command in ("lxc", "vm"):
         scope = args.command
         subcmd = getattr(args, "subcommand", None)
         if subcmd is None:
-            (p_container if scope == "container" else p_vm).print_help()
+            if scope == "lxc":
+                print(_build_lxc_help(), end="")
+            else:
+                print(_build_vm_help(), end="")
             sys.exit(0)
     else:
         scope = None
         subcmd = args.command
-        # For bare commands, subcommand attr may not exist; set it for dispatch
         args.subcommand = subcmd
 
     _dispatch(args, scope, subcmd)
 
 
 def _dispatch(args, scope: str | None, subcmd: str) -> None:
-    """Dispatch a command with the given scope (None, 'container', or 'vm')."""
+    """Dispatch a command with the given scope (None, 'lxc', or 'vm')."""
     if subcmd == "create":
         _dispatch_create(args, scope)
     elif subcmd == "run":
-        args.start = True  # run always starts
+        args.start = True
         _dispatch_create(args, scope)
     elif subcmd in ("start", "shutdown", "stop", "destroy", "rm", "scrub"):
         _dispatch_multi(args, scope, subcmd)
@@ -215,12 +280,12 @@ def _parse_network(network_str: str | None, mode: str | None) -> tuple[str | Non
             sys.exit(1)
         return "host", None
     if network_str == "usermode":
-        if mode not in ("vm", None):  # None = bare command, might be VM
+        if mode not in ("vm", None):
             print("Error: --network usermode is only supported in VM mode", file=sys.stderr)
             sys.exit(1)
         return "usermode", None
     if network_str == "bridge":
-        return "bridge", None  # auto-detect bridge name later
+        return "bridge", None
     if network_str.startswith("bridge="):
         bridge_name = network_str.split("=", 1)[1]
         if not bridge_name:
@@ -235,22 +300,24 @@ def _parse_network(network_str: str | None, mode: str | None) -> tuple[str | Non
 def _dispatch_create(args, scope: str | None) -> None:
     from kento.create import create
 
-    # Determine the effective mode
-    mode = args.mode
-    if scope == "vm" and mode is None:
-        # kento vm create => force VM mode
+    if scope == "lxc":
+        mode = "lxc"
+    elif scope == "vm":
         mode = "vm"
+    else:
+        print("Error: specify 'kento lxc create' or 'kento vm create'", file=sys.stderr)
+        sys.exit(1)
 
     # Name conflict check (only when --name is given and --force is not)
     if args.name and not args.force:
         from kento import check_name_conflict
-        target_ns = "vm" if mode == "vm" else "container"
+        target_ns = "vm" if mode == "vm" else "lxc"
         if check_name_conflict(args.name, target_ns):
-            other = "VM" if target_ns == "container" else "container"
+            other = "VM" if target_ns == "lxc" else "LXC"
             print(
                 f"Name '{args.name}' already exists as a {other}. "
                 "Use --force to allow duplicate names "
-                "(requires explicit 'kento container' or 'kento vm' for all commands).",
+                "(requires explicit 'kento lxc' or 'kento vm' for all commands).",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -259,8 +326,6 @@ def _dispatch_create(args, scope: str | None) -> None:
     net_type, bridge_name = _parse_network(getattr(args, 'network', None), mode)
 
     # Validate --port + network combinations (mode-aware)
-    # For VM: --port + bridge is invalid (usermode only)
-    # For LXC/PVE: --port REQUIRES bridge (iptables DNAT to container IP)
     if args.port and net_type in ("host", "none"):
         print("Error: --port cannot be used with --network host or --network none",
               file=sys.stderr)
@@ -268,7 +333,8 @@ def _dispatch_create(args, scope: str | None) -> None:
 
     create(args.image, name=args.name, bridge=bridge_name,
            nesting=args.nesting,
-           start=args.start, mode=mode, vmid=args.vmid,
+           start=args.start, mode=mode, pve=args.pve, vmid=args.vmid,
+           memory=args.memory, cores=args.cores,
            port=args.port, ip=args.ip, gateway=args.gateway,
            dns=args.dns, searchdomain=args.searchdomain,
            timezone=args.timezone, env=args.env,
@@ -288,9 +354,9 @@ def _dispatch_multi(args, scope: str | None, subcmd: str) -> None:
             if scope is None:
                 from kento import resolve_any
                 container_dir, mode = resolve_any(container_name)
-            elif scope == "container":
+            elif scope == "lxc":
                 from kento import read_mode, resolve_in_namespace
-                container_dir = resolve_in_namespace(container_name, "container")
+                container_dir = resolve_in_namespace(container_name, "lxc")
                 mode = read_mode(container_dir)
             else:  # scope == "vm"
                 from kento import resolve_in_namespace
@@ -322,9 +388,9 @@ def _dispatch_info(args, scope: str | None) -> None:
     if scope is None:
         from kento import resolve_any
         container_dir, mode = resolve_any(args.name)
-    elif scope == "container":
+    elif scope == "lxc":
         from kento import read_mode, resolve_in_namespace
-        container_dir = resolve_in_namespace(args.name, "container")
+        container_dir = resolve_in_namespace(args.name, "lxc")
         mode = read_mode(container_dir)
     else:  # scope == "vm"
         from kento import read_mode, resolve_in_namespace
