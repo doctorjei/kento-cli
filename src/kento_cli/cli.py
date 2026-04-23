@@ -16,6 +16,76 @@ def _validate_mac(value: str) -> str:
     return value
 
 
+def _validate_port(value: str) -> str:
+    """argparse type validator for --port.
+
+    Accepts: 'auto' or 'HOST:GUEST' where both are integers in [1, 65535].
+    """
+    if value == "auto":
+        return value
+    parts = value.split(":")
+    if len(parts) != 2:
+        raise argparse.ArgumentTypeError(
+            f"invalid port {value!r}: expected 'HOST:GUEST' (e.g. 10022:22) "
+            "or 'auto'"
+        )
+    try:
+        host_port, guest_port = int(parts[0]), int(parts[1])
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"invalid port {value!r}: both sides must be integers"
+        )
+    for label, p in (("host", host_port), ("guest", guest_port)):
+        if not (1 <= p <= 65535):
+            raise argparse.ArgumentTypeError(
+                f"invalid {label} port {p}: must be in [1, 65535]"
+            )
+    return value
+
+
+def _validate_memory(value: str) -> int:
+    """argparse type validator for --memory (MB, positive int)."""
+    try:
+        mb = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"invalid memory {value!r}: must be an integer (MB)"
+        )
+    if mb < 1:
+        raise argparse.ArgumentTypeError(
+            f"invalid memory {mb}: must be >= 1 MB"
+        )
+    return mb
+
+
+def _validate_cores(value: str) -> int:
+    """argparse type validator for --cores (positive int)."""
+    try:
+        n = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"invalid cores {value!r}: must be an integer"
+        )
+    if n < 1:
+        raise argparse.ArgumentTypeError(
+            f"invalid cores {n}: must be >= 1"
+        )
+    return n
+
+
+def _validate_ip(value: str) -> str:
+    """argparse type validator for --ip. Accepts 'A.B.C.D/prefix' form."""
+    import ipaddress
+    try:
+        ipaddress.ip_interface(value)
+    except (ValueError, TypeError):
+        raise argparse.ArgumentTypeError(
+            f"invalid IP {value!r}: expected 'A.B.C.D/prefix' "
+            "(e.g. 192.168.0.10/24)"
+        )
+    return value
+
+
 def _add_create_args(parser, *, scope: str | None = None) -> None:
     """Add the common arguments shared by 'create' and 'run' subcommands.
 
@@ -34,13 +104,13 @@ def _add_create_args(parser, *, scope: str | None = None) -> None:
     parser.add_argument("--pve", action=argparse.BooleanOptionalAction, default=None,
                         help="Force or prevent PVE integration (default: auto-detect)")
     parser.add_argument("--vmid", type=int, default=0, help="PVE VMID (auto-assigned if omitted)")
-    parser.add_argument("--memory", type=int, default=None,
+    parser.add_argument("--memory", type=_validate_memory, default=None,
                         help="Memory in MB (default: 512 for VM, unset for LXC)")
-    parser.add_argument("--cores", type=int, default=None,
+    parser.add_argument("--cores", type=_validate_cores, default=None,
                         help="Number of CPU cores (default: 1 for VM, unset for LXC)")
-    parser.add_argument("--port", default=None,
+    parser.add_argument("--port", default=None, type=_validate_port,
                         help="Port forwarding host:guest (e.g. 10022:22)")
-    parser.add_argument("--ip", default=None,
+    parser.add_argument("--ip", default=None, type=_validate_ip,
                         help="Static IP address with prefix (e.g. 192.168.0.160/22)")
     parser.add_argument("--gateway", default=None,
                         help="Default gateway (requires --ip)")
@@ -300,6 +370,12 @@ def _parse_network(network_str: str | None, mode: str | None) -> tuple[str | Non
         bridge_name = network_str.split("=", 1)[1]
         if not bridge_name:
             print("Error: --network bridge=<name> requires a bridge name", file=sys.stderr)
+            sys.exit(1)
+        from kento import _bridge_exists
+        if not _bridge_exists(bridge_name):
+            print(f"Error: bridge {bridge_name!r} does not exist. "
+                  f"Check 'ip link show type bridge' or use --network bridge "
+                  "to auto-detect.", file=sys.stderr)
             sys.exit(1)
         return "bridge", bridge_name
 
