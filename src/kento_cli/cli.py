@@ -98,20 +98,13 @@ def _validate_ip(value: str) -> str:
 
 
 def _add_create_args(parser, *, scope: str | None = None) -> None:
-    """Add the common arguments shared by 'create' and 'run' subcommands.
-
-    When scope == "lxc", the LXC-only `--unconfined` flag is also added.
-    """
+    """Add the common arguments shared by 'create' and 'run' subcommands."""
     parser.add_argument("image", help="OCI image reference")
     parser.add_argument("--name", default=None, help="Instance name (auto-generated if omitted)")
     parser.add_argument("--network", default=None,
                         help="Network mode: bridge, bridge=<name>, host, usermode, none")
     parser.add_argument("--nesting", action=argparse.BooleanOptionalAction, default=True,
                         help="Enable LXC nesting (default: on)")
-    if scope == "lxc":
-        parser.add_argument("--unconfined", action="store_true", default=False,
-                            help="Run container without AppArmor confinement. "
-                                 "Required for plain LXC due to systemd 256+ credentials bug.")
     parser.add_argument("--pve", action=argparse.BooleanOptionalAction, default=None,
                         help="Force or prevent PVE integration (default: auto-detect)")
     parser.add_argument("--vmid", type=int, default=0, help="PVE VMID (auto-assigned if omitted)")
@@ -162,8 +155,6 @@ def _add_commands(subparser, include_create: bool = True,
     """Register subcommands onto a given argparse subparser.
 
     When include_create is False, create and run are omitted (for top-level shortcuts).
-    `scope` is passed through to `_add_create_args` so LXC-only flags
-    (like `--unconfined`) are only registered on `kento lxc create`/`run`.
     """
     if include_create:
         p_create = subparser.add_parser("create", help="Create an instance from an OCI image")
@@ -444,15 +435,6 @@ def _dispatch_create(args, scope: str | None) -> None:
               file=sys.stderr)
         sys.exit(1)
 
-    # --unconfined is LXC-only; reject with --pve (PVE-LXC uses
-    # apparmor.profile=generated which doesn't have the credentials bug).
-    unconfined = getattr(args, "unconfined", False)
-    if unconfined and args.pve is True:
-        print("Error: --unconfined is only for plain LXC; PVE-LXC uses "
-              "apparmor.profile=generated which doesn't have this issue.",
-              file=sys.stderr)
-        sys.exit(1)
-
     create(args.image, name=args.name, bridge=bridge_name,
            nesting=args.nesting,
            start=args.start, mode=mode, pve=args.pve, vmid=args.vmid,
@@ -467,7 +449,6 @@ def _dispatch_create(args, scope: str | None) -> None:
            mac=args.mac,
            config_mode=args.config_mode,
            net_type=net_type,
-           unconfined=unconfined,
            force=args.force)
 
 
