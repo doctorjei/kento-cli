@@ -308,7 +308,13 @@ def _parse_network(network_str: str | None, mode: str | None) -> tuple[str | Non
 
 
 def _dispatch_create(args, scope: str | None) -> None:
+    from kento import validate_name
     from kento.create import create
+
+    # Validate explicit --name up front so bad names fail fast, before root
+    # check, conflict scan, or any filesystem writes.
+    if args.name is not None:
+        validate_name(args.name)
 
     if scope == "lxc":
         mode = "lxc"
@@ -369,9 +375,11 @@ def _dispatch_create(args, scope: str | None) -> None:
 
 
 def _dispatch_multi(args, scope: str | None, subcmd: str) -> None:
+    from kento import validate_name
     errors = 0
     for container_name in args.name:
         try:
+            validate_name(container_name)
             if scope is None:
                 from kento import resolve_any
                 container_dir, mode = resolve_any(container_name)
@@ -403,7 +411,8 @@ def _dispatch_multi(args, scope: str | None, subcmd: str) -> None:
 
 
 def _dispatch_info(args, scope: str | None) -> None:
-    from kento import require_root
+    from kento import require_root, validate_name
+    validate_name(args.name)
     require_root()
 
     if scope is None:
