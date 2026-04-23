@@ -364,7 +364,8 @@ def _dispatch_create(args, scope: str | None) -> None:
            mac=args.mac,
            config_mode=args.config_mode,
            net_type=net_type,
-           unconfined=unconfined)
+           unconfined=unconfined,
+           force=args.force)
 
 
 def _dispatch_multi(args, scope: str | None, subcmd: str) -> None:
