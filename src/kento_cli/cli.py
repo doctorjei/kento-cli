@@ -7,11 +7,22 @@ from kento import __version__
 
 
 def _validate_mac(value: str) -> str:
-    """argparse type validator for --mac. Accepts any valid 6-pair hex MAC."""
+    """argparse type validator for --mac. Accepts unicast MACs; rejects multicast."""
     from kento.vm import is_valid_mac
     if not is_valid_mac(value):
         raise argparse.ArgumentTypeError(
             f"invalid MAC address: {value!r} (expected XX:XX:XX:XX:XX:XX)"
+        )
+    # F16: reject multicast (first-octet LSB set) and broadcast MACs.
+    # A NIC assigned a multicast MAC will silently drop its own unicast
+    # traffic on most stacks, so this is always a user error.
+    first_octet = int(value.split(":")[0], 16)
+    if first_octet & 0x01:
+        raise argparse.ArgumentTypeError(
+            f"invalid MAC address: {value!r} is multicast/broadcast "
+            f"(first-octet LSB is set). Use a unicast MAC — "
+            f"locally-administered MACs (second-LSB set, e.g. 02/06/0a/0e) "
+            f"are fine."
         )
     return value
 
