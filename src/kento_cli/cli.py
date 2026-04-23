@@ -538,7 +538,13 @@ def _dispatch_pull(args) -> None:
     from kento import require_root
     require_root()
     import subprocess
-    result = subprocess.run(["podman", "pull", args.image])
+    try:
+        result = subprocess.run(["podman", "pull", args.image])
+    except FileNotFoundError:
+        print("Error: 'podman' not found on PATH. Install podman "
+              "(apt install podman / dnf install podman) and retry.",
+              file=sys.stderr)
+        sys.exit(2)
     if result.returncode != 0:
         sys.exit(result.returncode)
 
