@@ -146,6 +146,16 @@ def _add_create_args(parser, *, scope: str | None = None) -> None:
                         choices=["injection", "cloudinit", "auto"],
                         dest="config_mode",
                         help="Config delivery: injection (file writes), cloudinit (NoCloud seed), auto (detect)")
+    parser.add_argument("--qemu-arg", action="append", default=None,
+                        dest="qemu_args", metavar="ARG",
+                        help="Extra QEMU argument appended verbatim to the VM's argv "
+                             "(VM modes only, repeatable). Stored in "
+                             "<instance_dir>/kento-qemu-args, one per line.")
+    parser.add_argument("--pve-arg", action="append", default=None,
+                        dest="pve_args", metavar="KEY: VALUE",
+                        help="Extra line appended verbatim to the generated PVE config "
+                             "(PVE modes only, repeatable). Stored in "
+                             "<instance_dir>/kento-pve-args, one line per entry.")
     parser.add_argument("--force", action="store_true",
                         help="Allow creating with a name that exists in the other namespace")
 
@@ -412,6 +422,41 @@ def _dispatch_create(args, scope: str | None) -> None:
               file=sys.stderr)
         sys.exit(1)
 
+    # --qemu-arg only applies to VM modes (plain VM and PVE-VM both boot
+    # QEMU; LXC modes never invoke QEMU). Reject at the LXC scope with a
+    # pointer to the future --lxc-config flag that will serve the same
+    # escape-hatch role for plain LXC.
+    if scope == "lxc" and getattr(args, "qemu_args", None):
+        print("Error: --qemu-arg is not supported for LXC/PVE-LXC; it applies "
+              "only to VM modes. For PVE-LXC config pass-through use "
+              "--pve-arg instead. Plain-LXC raw config pass-through is not yet "
+              "implemented (tracked as --lxc-config).", file=sys.stderr)
+        sys.exit(1)
+
+    # --pve-arg requires a PVE mode — either explicit --pve, or PVE
+    # auto-detected on this host. Plain LXC has a different config surface
+    # (a .conf file, not k/v) and plain VM has no PVE qm config to append to.
+    if getattr(args, "pve_args", None):
+        from kento.pve import is_pve
+        if args.pve is False:
+            print("Error: --pve-arg requires PVE mode but --no-pve was specified.",
+                  file=sys.stderr)
+            sys.exit(1)
+        if args.pve is None and not is_pve():
+            if scope == "lxc":
+                print("Error: --pve-arg is not supported for plain LXC; it "
+                      "appends lines to the PVE qm/lxc config and only applies "
+                      "on PVE hosts. Plain-LXC raw config pass-through is not "
+                      "yet implemented (tracked as --lxc-config). Drop "
+                      "--pve-arg or run on a PVE host with --pve.",
+                      file=sys.stderr)
+            else:
+                print("Error: --pve-arg is not supported for plain VM; it "
+                      "appends lines to the PVE qm config and only applies "
+                      "on PVE hosts. Drop --pve-arg or run on a PVE host "
+                      "with --pve.", file=sys.stderr)
+            sys.exit(1)
+
     # Name conflict check (only when --name is given and --force is not)
     if args.name and not args.force:
         from kento import check_name_conflict
@@ -448,6 +493,8 @@ def _dispatch_create(args, scope: str | None) -> None:
            ssh_host_key_dir=args.ssh_host_key_dir,
            mac=args.mac,
            config_mode=args.config_mode,
+           qemu_args=getattr(args, "qemu_args", None),
+           pve_args=getattr(args, "pve_args", None),
            net_type=net_type,
            force=args.force)
 
