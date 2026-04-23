@@ -400,6 +400,16 @@ def _dispatch_create(args, scope: str | None) -> None:
         print("Error: specify 'kento lxc create' or 'kento vm create'", file=sys.stderr)
         sys.exit(1)
 
+    # --mac only affects VM modes (see create.py: kento-mac is written only
+    # for mode in ('vm', 'pve-vm')). Silently accepting it for LXC misleads
+    # users who expect it to stick. PVE-LXC mode is reached via lxc scope +
+    # --pve auto-promotion; reject at both branches.
+    if scope == "lxc" and args.mac is not None:
+        print("Error: --mac is not supported for LXC/PVE-LXC; it applies only "
+              "to VM modes. Remove --mac or use 'kento vm create'.",
+              file=sys.stderr)
+        sys.exit(1)
+
     # Name conflict check (only when --name is given and --force is not)
     if args.name and not args.force:
         from kento import check_name_conflict
