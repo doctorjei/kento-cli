@@ -513,9 +513,9 @@ def _dispatch_multi(args, scope: str | None, subcmd: str) -> None:
                 container_dir = resolve_in_namespace(container_name, "lxc")
                 mode = read_mode(container_dir)
             else:  # scope == "vm"
-                from kento import resolve_in_namespace
+                from kento import read_mode, resolve_in_namespace
                 container_dir = resolve_in_namespace(container_name, "vm")
-                mode = "vm"
+                mode = read_mode(container_dir, "vm")   # default "vm" for legacy instances missing kento-mode
 
             if subcmd == "start":
                 from kento.start import start
