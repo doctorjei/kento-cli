@@ -244,8 +244,14 @@ def _add_commands(subparser, include_create: bool = True,
     p_inspect.add_argument("-v", "--verbose", action="store_true",
                             help="Show layer sizes and paths")
 
-    subparser.add_parser("list", help="List instances")
-    subparser.add_parser("ls", help="List instances")
+    p_list = subparser.add_parser("list", help="List instances")
+    p_list.add_argument("-s", "--size", action="store_true", dest="show_size",
+                        help="Include the UPPER SIZE column (runs 'du -sh' per "
+                             "instance; slow on long-running containers).")
+    p_ls = subparser.add_parser("ls", help="List instances")
+    p_ls.add_argument("-s", "--size", action="store_true", dest="show_size",
+                      help="Include the UPPER SIZE column (runs 'du -sh' per "
+                           "instance; slow on long-running containers).")
 
 
 def _build_top_help() -> str:
@@ -595,7 +601,7 @@ def _dispatch_info(args, scope: str | None) -> None:
 
 def _dispatch_list(args, scope: str | None) -> None:
     from kento.list import list_containers
-    list_containers(scope=scope)
+    list_containers(scope=scope, show_size=getattr(args, "show_size", False))
 
 
 def _dispatch_pull(args) -> None:
