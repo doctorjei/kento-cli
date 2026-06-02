@@ -84,6 +84,21 @@ def _validate_cores(value: str) -> int:
     return n
 
 
+def _validate_timeout(value: str) -> int:
+    """argparse type validator for --timeout (seconds, positive int)."""
+    try:
+        n = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"invalid timeout {value!r}: must be an integer (seconds)"
+        )
+    if n < 1:
+        raise argparse.ArgumentTypeError(
+            f"invalid timeout {n}: must be >= 1"
+        )
+    return n
+
+
 def _validate_ip(value: str) -> str:
     """argparse type validator for --ip. Accepts 'A.B.C.D/prefix' form."""
     import ipaddress
@@ -181,11 +196,25 @@ def _add_commands(subparser, include_create: bool = True,
     p_shutdown.add_argument("name", nargs="+", metavar="NAME", help="Instance name(s)")
     p_shutdown.add_argument("-f", "--force", action="store_true",
                             help="Force immediate stop (kill)")
+    p_shutdown.add_argument("--timeout", type=_validate_timeout, default=None,
+                            help="Graceful shutdown window in seconds before hard-stop "
+                                 "fallback (pve-vm only, default: 30)")
+    p_shutdown.add_argument("--graceful-only", action="store_true",
+                            dest="graceful_only",
+                            help="Drop the hard-stop fallback; wait forever for "
+                                 "graceful shutdown (pve-vm only)")
 
     p_stop = subparser.add_parser("stop", help="Stop one or more instances (alias for shutdown)")
     p_stop.add_argument("name", nargs="+", metavar="NAME", help="Instance name(s)")
     p_stop.add_argument("-f", "--force", action="store_true",
                         help="Force immediate stop (kill)")
+    p_stop.add_argument("--timeout", type=_validate_timeout, default=None,
+                        help="Graceful shutdown window in seconds before hard-stop "
+                             "fallback (pve-vm only, default: 30)")
+    p_stop.add_argument("--graceful-only", action="store_true",
+                        dest="graceful_only",
+                        help="Drop the hard-stop fallback; wait forever for "
+                             "graceful shutdown (pve-vm only)")
 
     p_destroy = subparser.add_parser("destroy", help="Remove one or more instances")
     p_destroy.add_argument("name", nargs="+", metavar="NAME", help="Instance name(s)")
@@ -522,7 +551,14 @@ def _dispatch_multi(args, scope: str | None, subcmd: str) -> None:
                 start(container_name, container_dir=container_dir, mode=mode)
             elif subcmd in ("shutdown", "stop"):
                 from kento.stop import shutdown
-                shutdown(container_name, force=args.force, container_dir=container_dir, mode=mode)
+                shutdown(
+                    container_name,
+                    force=args.force,
+                    container_dir=container_dir,
+                    mode=mode,
+                    timeout=getattr(args, "timeout", None),
+                    graceful_only=getattr(args, "graceful_only", False),
+                )
             elif subcmd in ("destroy", "rm"):
                 from kento.destroy import destroy
                 destroy(container_name, force=args.force, container_dir=container_dir, mode=mode)
