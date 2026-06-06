@@ -277,6 +277,8 @@ Shortcuts:
   scrub               Scrub instances to clean OCI state
   info, inspect       Show instance details
   pull                Pull an OCI image
+  images              List kento-managed OCI images
+  prune               Remove orphaned hold containers and freed images
 
 Options:
   --version           Show version and exit
@@ -343,6 +345,15 @@ def main(argv: list[str] | None = None) -> None:
     p_pull = top_sub.add_parser("pull", help="Pull an OCI image")
     p_pull.add_argument("image", help="OCI image reference")
 
+    p_images = top_sub.add_parser("images", help="List kento-managed OCI images")
+    p_images.add_argument("--in-use", action="store_true", dest="in_use",
+                          help="Show only images referenced by an existing guest")
+
+    p_prune = top_sub.add_parser(
+        "prune", help="Remove orphaned kento hold containers and freed images")
+    p_prune.add_argument("--yes", action="store_true",
+                         help="Actually remove (default: dry-run)")
+
     # -- lxc subcommand group (kento lxc create, ...) --
     p_lxc = top_sub.add_parser("lxc", help="Manage LXC instances")
     p_lxc.format_help = _build_lxc_help
@@ -394,6 +405,14 @@ def _dispatch(args, scope: str | None, subcmd: str) -> None:
         _dispatch_list(args, scope)
     elif subcmd == "pull":
         _dispatch_pull(args)
+    elif subcmd == "images":
+        from kento.images import list_images
+        list_images(in_use_only=args.in_use)
+    elif subcmd == "prune":
+        from kento import require_root
+        require_root()
+        from kento.images import prune
+        prune(yes=args.yes)
 
 
 def _parse_network(network_str: str | None, mode: str | None) -> tuple[str | None, str | None]:
