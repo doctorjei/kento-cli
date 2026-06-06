@@ -118,8 +118,13 @@ def _add_create_args(parser, *, scope: str | None = None) -> None:
     parser.add_argument("--name", default=None, help="Instance name (auto-generated if omitted)")
     parser.add_argument("--network", default=None,
                         help="Network mode: bridge, bridge=<name>, host, usermode, none")
-    parser.add_argument("--nesting", action=argparse.BooleanOptionalAction, default=True,
-                        help="Enable LXC nesting (default: on)")
+    parser.add_argument("--allow-nesting", action=argparse.BooleanOptionalAction,
+                        default=False, dest="allow_nesting",
+                        help="Allow nested virtualization/containerization. "
+                             "LXC modes: the container may run nested containers. "
+                             "VM modes: the guest is exposed CPU virtualization "
+                             "extensions (vmx/svm) so it can run hardware-accelerated "
+                             "VMs. Default: off.")
     parser.add_argument("--pve", action=argparse.BooleanOptionalAction, default=None,
                         help="Force or prevent PVE integration (default: auto-detect)")
     parser.add_argument("--vmid", type=int, default=0, help="PVE VMID (auto-assigned if omitted)")
@@ -516,7 +521,7 @@ def _dispatch_create(args, scope: str | None) -> None:
         sys.exit(1)
 
     create(args.image, name=args.name, bridge=bridge_name,
-           nesting=args.nesting,
+           nesting=args.allow_nesting,
            start=args.start, mode=mode, pve=args.pve, vmid=args.vmid,
            memory=args.memory, cores=args.cores,
            port=args.port, ip=args.ip, gateway=args.gateway,
