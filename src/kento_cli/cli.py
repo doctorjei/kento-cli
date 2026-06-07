@@ -300,6 +300,16 @@ def _add_commands(subparser, include_create: bool = True,
                             "list (plain LXC only, repeatable). Pass "
                             "--lxc-arg '' to clear.")
 
+    p_suspend = subparser.add_parser(
+        "suspend",
+        help="Pause a running VM's vCPUs (VM modes only)")
+    p_suspend.add_argument("name", metavar="NAME", help="Instance name")
+
+    p_resume = subparser.add_parser(
+        "resume",
+        help="Resume a suspended VM's vCPUs (VM modes only)")
+    p_resume.add_argument("name", metavar="NAME", help="Instance name")
+
     p_list = subparser.add_parser("list", help="List instances")
     p_list.add_argument("-s", "--size", action="store_true", dest="show_size",
                         help="Include the UPPER SIZE column (runs 'du -sh' per "
@@ -330,6 +340,8 @@ Shortcuts:
   attach, enter       Attach to an instance's console (interactive)
   exec                Run a command inside an instance (LXC/PVE-LXC)
   logs                Show journalctl logs from an instance (LXC/PVE-LXC)
+  suspend             Pause a running VM's vCPUs (VM modes only)
+  resume              Resume a suspended VM's vCPUs (VM modes only)
   pull                Pull an OCI image
   images              List kento-managed OCI images
   prune               Remove orphaned hold containers and freed images
@@ -358,6 +370,8 @@ Subcommands:
   attach, enter       Attach to an LXC instance's console (interactive)
   exec                Run a command inside an LXC instance
   logs                Show journalctl logs from an LXC instance
+  suspend             Unsupported for LXC (use 'kento stop')
+  resume              Unsupported for LXC (use 'kento start')
 
 Options:
   -h, --help          Show this help message and exit
@@ -382,6 +396,8 @@ Subcommands:
   attach, enter       Attach to a VM instance's console (interactive)
   exec                Run a command inside an instance (LXC/PVE-LXC only)
   logs                Show journalctl logs (LXC/PVE-LXC only)
+  suspend             Pause a running VM's vCPUs
+  resume              Resume a suspended VM's vCPUs
 
 Options:
   -h, --help          Show this help message and exit
@@ -469,6 +485,10 @@ def _dispatch(args, scope: str | None, subcmd: str) -> None:
         _dispatch_logs(args, scope)
     elif subcmd == "set":
         _dispatch_set(args, scope)
+    elif subcmd == "suspend":
+        _dispatch_suspend(args, scope)
+    elif subcmd == "resume":
+        _dispatch_resume(args, scope)
     elif subcmd in ("list", "ls"):
         _dispatch_list(args, scope)
     elif subcmd == "pull":
@@ -721,6 +741,20 @@ def _dispatch_set(args, scope: str | None) -> None:
     sys.exit(set_cmd(args.name, memory=args.memory, cores=args.cores,
                      mac=args.mac, qemu_args=args.qemu_args,
                      pve_args=args.pve_args, lxc_args=args.lxc_args))
+
+
+def _dispatch_suspend(args, scope: str | None) -> None:
+    from kento import validate_name
+    validate_name(args.name)
+    from kento.suspend import suspend
+    sys.exit(suspend(args.name))
+
+
+def _dispatch_resume(args, scope: str | None) -> None:
+    from kento import validate_name
+    validate_name(args.name)
+    from kento.suspend import resume
+    sys.exit(resume(args.name))
 
 
 def _dispatch_exec(args, scope: str | None) -> None:
