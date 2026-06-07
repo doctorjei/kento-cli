@@ -271,6 +271,25 @@ def _add_commands(subparser, include_create: bool = True,
     p_logs.add_argument("args", nargs=argparse.REMAINDER, metavar="ARGS",
                         help="Extra args forwarded to journalctl (e.g. -f -n 50)")
 
+    p_set = subparser.add_parser(
+        "set",
+        help="Change scalar settings on a stopped instance (takes effect next start)")
+    p_set.add_argument("name", metavar="NAME", help="Instance name")
+    p_set.add_argument("--memory", type=int, default=None, dest="memory",
+                       metavar="MB", help="Memory limit in MB")
+    p_set.add_argument("--cores", type=int, default=None, dest="cores",
+                       metavar="N", help="Number of CPU cores")
+    p_set.add_argument("--mac", default=None, dest="mac", metavar="MAC",
+                       help="MAC address (VM modes only, XX:XX:XX:XX:XX:XX)")
+    p_set.add_argument("--qemu-arg", action="append", default=None,
+                       dest="qemu_args", metavar="ARG",
+                       help="Replace the QEMU pass-through list (VM modes only, "
+                            "repeatable). Pass --qemu-arg '' to clear.")
+    p_set.add_argument("--pve-arg", action="append", default=None,
+                       dest="pve_args", metavar="KEY: VALUE",
+                       help="Replace the PVE config pass-through list (PVE modes "
+                            "only, repeatable). Pass --pve-arg '' to clear.")
+
     p_list = subparser.add_parser("list", help="List instances")
     p_list.add_argument("-s", "--size", action="store_true", dest="show_size",
                         help="Include the UPPER SIZE column (runs 'du -sh' per "
@@ -438,6 +457,8 @@ def _dispatch(args, scope: str | None, subcmd: str) -> None:
         _dispatch_exec(args, scope)
     elif subcmd == "logs":
         _dispatch_logs(args, scope)
+    elif subcmd == "set":
+        _dispatch_set(args, scope)
     elif subcmd in ("list", "ls"):
         _dispatch_list(args, scope)
     elif subcmd == "pull":
@@ -665,6 +686,15 @@ def _dispatch_attach(args, scope: str | None) -> None:
     validate_name(args.name)
     from kento.attach import attach
     sys.exit(attach(args.name))
+
+
+def _dispatch_set(args, scope: str | None) -> None:
+    from kento import validate_name
+    validate_name(args.name)
+    from kento.set_cmd import set_cmd
+    sys.exit(set_cmd(args.name, memory=args.memory, cores=args.cores,
+                     mac=args.mac, qemu_args=args.qemu_args,
+                     pve_args=args.pve_args))
 
 
 def _dispatch_exec(args, scope: str | None) -> None:
