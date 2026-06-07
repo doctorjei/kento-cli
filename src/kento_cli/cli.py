@@ -249,6 +249,28 @@ def _add_commands(subparser, include_create: bool = True,
     p_inspect.add_argument("-v", "--verbose", action="store_true",
                             help="Show layer sizes and paths")
 
+    p_attach = subparser.add_parser("attach",
+                                    help="Attach to an instance's console (interactive)")
+    p_attach.add_argument("name", metavar="NAME", help="Instance name")
+
+    p_enter = subparser.add_parser("enter",
+                                   help="Attach to an instance's console (alias for attach)")
+    p_enter.add_argument("name", metavar="NAME", help="Instance name")
+
+    p_exec = subparser.add_parser("exec",
+                                  help="Run a command inside an instance (LXC/PVE-LXC only)")
+    p_exec.add_argument("name", metavar="NAME", help="Instance name")
+    p_exec.add_argument("exec_command", nargs=argparse.REMAINDER,
+                        metavar="COMMAND",
+                        help="Command to run (use '--' before flags, "
+                             "e.g. 'kento exec NAME -- ls -la')")
+
+    p_logs = subparser.add_parser("logs",
+                                  help="Show journalctl logs from an instance (LXC/PVE-LXC only)")
+    p_logs.add_argument("name", metavar="NAME", help="Instance name")
+    p_logs.add_argument("args", nargs=argparse.REMAINDER, metavar="ARGS",
+                        help="Extra args forwarded to journalctl (e.g. -f -n 50)")
+
     p_list = subparser.add_parser("list", help="List instances")
     p_list.add_argument("-s", "--size", action="store_true", dest="show_size",
                         help="Include the UPPER SIZE column (runs 'du -sh' per "
@@ -276,6 +298,9 @@ Shortcuts:
   destroy, rm         Remove instances
   scrub               Scrub instances to clean OCI state
   info, inspect       Show instance details
+  attach, enter       Attach to an instance's console (interactive)
+  exec                Run a command inside an instance (LXC/PVE-LXC)
+  logs                Show journalctl logs from an instance (LXC/PVE-LXC)
   pull                Pull an OCI image
   images              List kento-managed OCI images
   prune               Remove orphaned hold containers and freed images
@@ -301,6 +326,9 @@ Subcommands:
   destroy, rm         Remove LXC instances
   scrub               Scrub LXC instances to clean OCI state
   info, inspect       Show LXC instance details
+  attach, enter       Attach to an LXC instance's console (interactive)
+  exec                Run a command inside an LXC instance
+  logs                Show journalctl logs from an LXC instance
 
 Options:
   -h, --help          Show this help message and exit
@@ -322,6 +350,9 @@ Subcommands:
   destroy, rm         Remove VM instances
   scrub               Scrub VM instances to clean OCI state
   info, inspect       Show VM instance details
+  attach, enter       Attach to a VM instance's console (interactive)
+  exec                Run a command inside an instance (LXC/PVE-LXC only)
+  logs                Show journalctl logs (LXC/PVE-LXC only)
 
 Options:
   -h, --help          Show this help message and exit
@@ -401,6 +432,12 @@ def _dispatch(args, scope: str | None, subcmd: str) -> None:
         _dispatch_multi(args, scope, subcmd)
     elif subcmd in ("info", "inspect"):
         _dispatch_info(args, scope)
+    elif subcmd in ("attach", "enter"):
+        _dispatch_attach(args, scope)
+    elif subcmd == "exec":
+        _dispatch_exec(args, scope)
+    elif subcmd == "logs":
+        _dispatch_logs(args, scope)
     elif subcmd in ("list", "ls"):
         _dispatch_list(args, scope)
     elif subcmd == "pull":
@@ -621,6 +658,37 @@ def _dispatch_info(args, scope: str | None) -> None:
     from kento.info import info
     info(args.name, container_dir=container_dir, mode=mode,
          as_json=args.as_json, verbose=args.verbose)
+
+
+def _dispatch_attach(args, scope: str | None) -> None:
+    from kento import validate_name
+    validate_name(args.name)
+    from kento.attach import attach
+    sys.exit(attach(args.name))
+
+
+def _dispatch_exec(args, scope: str | None) -> None:
+    from kento import validate_name
+    validate_name(args.name)
+    # argparse.REMAINDER captures a leading '--' verbatim; strip it so both
+    # 'kento exec foo -- ls -la' and 'kento exec foo ls -la' pass the same
+    # command list to exec_cmd.
+    command = list(args.exec_command)
+    if command and command[0] == "--":
+        command = command[1:]
+    from kento.exec_cmd import exec_cmd
+    sys.exit(exec_cmd(args.name, command))
+
+
+def _dispatch_logs(args, scope: str | None) -> None:
+    from kento import validate_name
+    validate_name(args.name)
+    # Strip a leading '--' that argparse.REMAINDER may have captured.
+    extra = list(args.args)
+    if extra and extra[0] == "--":
+        extra = extra[1:]
+    from kento.logs import logs
+    sys.exit(logs(args.name, extra))
 
 
 def _dispatch_list(args, scope: str | None) -> None:
