@@ -176,6 +176,11 @@ def _add_create_args(parser, *, scope: str | None = None) -> None:
                         help="Extra line appended verbatim to the generated PVE config "
                              "(PVE modes only, repeatable). Stored in "
                              "<instance_dir>/kento-pve-args, one line per entry.")
+    parser.add_argument("--lxc-arg", action="append", default=None,
+                        dest="lxc_args", metavar="KEY = VALUE",
+                        help="Append a raw line to the plain-LXC native config "
+                             "(plain LXC only, repeatable). Stored in "
+                             "<instance_dir>/kento-lxc-args, one line per entry.")
     parser.add_argument("--force", action="store_true",
                         help="Allow creating with a name that exists in the other namespace")
 
@@ -289,6 +294,11 @@ def _add_commands(subparser, include_create: bool = True,
                        dest="pve_args", metavar="KEY: VALUE",
                        help="Replace the PVE config pass-through list (PVE modes "
                             "only, repeatable). Pass --pve-arg '' to clear.")
+    p_set.add_argument("--lxc-arg", action="append", default=None,
+                       dest="lxc_args", metavar="KEY = VALUE",
+                       help="Replace the plain-LXC native config pass-through "
+                            "list (plain LXC only, repeatable). Pass "
+                            "--lxc-arg '' to clear.")
 
     p_list = subparser.add_parser("list", help="List instances")
     p_list.add_argument("-s", "--size", action="store_true", dest="show_size",
@@ -541,14 +551,30 @@ def _dispatch_create(args, scope: str | None) -> None:
 
     # --qemu-arg only applies to VM modes (plain VM and PVE-VM both boot
     # QEMU; LXC modes never invoke QEMU). Reject at the LXC scope with a
-    # pointer to the future --lxc-config flag that will serve the same
-    # escape-hatch role for plain LXC.
+    # pointer to --pve-arg (PVE-LXC) / --lxc-arg (plain LXC) which serve the
+    # escape-hatch role for the LXC config surfaces.
     if scope == "lxc" and getattr(args, "qemu_args", None):
         print("Error: --qemu-arg is not supported for LXC/PVE-LXC; it applies "
               "only to VM modes. For PVE-LXC config pass-through use "
-              "--pve-arg instead. Plain-LXC raw config pass-through is not yet "
-              "implemented (tracked as --lxc-config).", file=sys.stderr)
+              "--pve-arg; for plain-LXC native config pass-through use "
+              "--lxc-arg.", file=sys.stderr)
         sys.exit(1)
+
+    # --lxc-arg targets plain-LXC's native config ONLY. On a PVE host (or
+    # explicit --pve) the LXC config is the PVE .conf, which already carries
+    # raw lxc.* lines via --pve-arg; VM scope has no native LXC config.
+    # Mirror the pve_args scope check, inverted.
+    if scope == "vm" and getattr(args, "lxc_args", None):
+        print("Error: --lxc-arg is not applicable to VM modes (no native LXC "
+              "config). For QEMU pass-through use --qemu-arg.", file=sys.stderr)
+        sys.exit(1)
+    if scope == "lxc" and getattr(args, "lxc_args", None):
+        from kento.pve import is_pve
+        if args.pve is True or (args.pve is None and is_pve()):
+            print("Error: --lxc-arg is not supported on a PVE host. On PVE "
+                  "the LXC config is the PVE config; use --pve-arg, which "
+                  "carries raw lxc.* lines.", file=sys.stderr)
+            sys.exit(1)
 
     # --pve-arg requires a PVE mode — either explicit --pve, or PVE
     # auto-detected on this host. Plain LXC has a different config surface
@@ -563,10 +589,9 @@ def _dispatch_create(args, scope: str | None) -> None:
             if scope == "lxc":
                 print("Error: --pve-arg is not supported for plain LXC; it "
                       "appends lines to the PVE qm/lxc config and only applies "
-                      "on PVE hosts. Plain-LXC raw config pass-through is not "
-                      "yet implemented (tracked as --lxc-config). Drop "
-                      "--pve-arg or run on a PVE host with --pve.",
-                      file=sys.stderr)
+                      "on PVE hosts. For plain-LXC native config pass-through "
+                      "use --lxc-arg. Drop --pve-arg or run on a PVE host "
+                      "with --pve.", file=sys.stderr)
             else:
                 print("Error: --pve-arg is not supported for plain VM; it "
                       "appends lines to the PVE qm config and only applies "
@@ -612,6 +637,7 @@ def _dispatch_create(args, scope: str | None) -> None:
            config_mode=args.config_mode,
            qemu_args=getattr(args, "qemu_args", None),
            pve_args=getattr(args, "pve_args", None),
+           lxc_args=getattr(args, "lxc_args", None),
            net_type=net_type,
            force=args.force)
 
@@ -694,7 +720,7 @@ def _dispatch_set(args, scope: str | None) -> None:
     from kento.set_cmd import set_cmd
     sys.exit(set_cmd(args.name, memory=args.memory, cores=args.cores,
                      mac=args.mac, qemu_args=args.qemu_args,
-                     pve_args=args.pve_args))
+                     pve_args=args.pve_args, lxc_args=args.lxc_args))
 
 
 def _dispatch_exec(args, scope: str | None) -> None:
