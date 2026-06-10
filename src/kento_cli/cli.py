@@ -151,7 +151,8 @@ def _add_create_args(parser, *, scope: str | None = None) -> None:
                         help="Path to a file with SSH public keys (repeatable)")
     parser.add_argument("--ssh-key-user", default="root",
                         dest="ssh_key_user",
-                        help="User whose authorized_keys receives injected SSH keys (default: root)")
+                        help="User whose authorized_keys receives injected SSH keys (default: root); "
+                             "cloud images usually need a distro user like 'debian' rather than root")
     host_key_group = parser.add_mutually_exclusive_group()
     host_key_group.add_argument("--ssh-host-keys", action="store_true",
                                 default=False, dest="ssh_host_keys",
