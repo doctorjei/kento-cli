@@ -161,17 +161,19 @@ def _add_create_args(parser, *, scope: str | None = None) -> None:
                                 dest="ssh_host_key_dir",
                                 help="Path to directory with SSH host keys to copy")
     parser.add_argument("--mac", default=None, type=_validate_mac,
-                        help="Override the auto-generated MAC address (VM modes only, "
-                             "format: XX:XX:XX:XX:XX:XX)")
+                        help=(argparse.SUPPRESS if scope == "lxc" else
+                              "Override the auto-generated MAC address (VM modes only, "
+                              "format: XX:XX:XX:XX:XX:XX)"))
     parser.add_argument("--config-mode", default="auto",
                         choices=["injection", "cloudinit", "auto"],
                         dest="config_mode",
                         help="Config delivery: injection (file writes), cloudinit (NoCloud seed), auto (detect)")
     parser.add_argument("--qemu-arg", action="append", default=None,
                         dest="qemu_args", metavar="ARG",
-                        help="Extra QEMU argument appended verbatim to the VM's argv "
-                             "(VM modes only, repeatable). Stored in "
-                             "<instance_dir>/kento-qemu-args, one per line.")
+                        help=(argparse.SUPPRESS if scope == "lxc" else
+                              "Extra QEMU argument appended verbatim to the VM's argv "
+                              "(VM modes only, repeatable). Stored in "
+                              "<instance_dir>/kento-qemu-args, one per line."))
     parser.add_argument("--pve-arg", action="append", default=None,
                         dest="pve_args", metavar="KEY: VALUE",
                         help="Extra line appended verbatim to the generated PVE config "
@@ -179,9 +181,10 @@ def _add_create_args(parser, *, scope: str | None = None) -> None:
                              "<instance_dir>/kento-pve-args, one line per entry.")
     parser.add_argument("--lxc-arg", action="append", default=None,
                         dest="lxc_args", metavar="KEY = VALUE",
-                        help="Append a raw line to the plain-LXC native config "
-                             "(plain LXC only, repeatable). Stored in "
-                             "<instance_dir>/kento-lxc-args, one line per entry.")
+                        help=(argparse.SUPPRESS if scope == "vm" else
+                              "Append a raw line to the plain-LXC native config "
+                              "(plain LXC only, repeatable). Stored in "
+                              "<instance_dir>/kento-lxc-args, one line per entry."))
     parser.add_argument("--force", action="store_true",
                         help="Allow creating with a name that exists in the other namespace")
 
