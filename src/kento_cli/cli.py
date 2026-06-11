@@ -289,6 +289,7 @@ def _add_commands(subparser, include_create: bool = True,
     p_set.add_argument("--cores", type=int, default=None, dest="cores",
                        metavar="N", help="Number of CPU cores")
     p_set.add_argument("--mac", default=None, dest="mac", metavar="MAC",
+                       type=_validate_mac,
                        help="MAC address (VM modes only, XX:XX:XX:XX:XX:XX)")
     p_set.add_argument("--qemu-arg", action="append", default=None,
                        dest="qemu_args", metavar="ARG",
@@ -735,7 +736,7 @@ def _dispatch_attach(args, scope: str | None) -> None:
     from kento import validate_name
     validate_name(args.name)
     from kento.attach import attach
-    sys.exit(attach(args.name))
+    sys.exit(attach(args.name, namespace=scope))
 
 
 def _dispatch_set(args, scope: str | None) -> None:
@@ -744,21 +745,22 @@ def _dispatch_set(args, scope: str | None) -> None:
     from kento.set_cmd import set_cmd
     sys.exit(set_cmd(args.name, memory=args.memory, cores=args.cores,
                      mac=args.mac, qemu_args=args.qemu_args,
-                     pve_args=args.pve_args, lxc_args=args.lxc_args))
+                     pve_args=args.pve_args, lxc_args=args.lxc_args,
+                     namespace=scope))
 
 
 def _dispatch_suspend(args, scope: str | None) -> None:
     from kento import validate_name
     validate_name(args.name)
     from kento.suspend import suspend
-    sys.exit(suspend(args.name))
+    sys.exit(suspend(args.name, namespace=scope))
 
 
 def _dispatch_resume(args, scope: str | None) -> None:
     from kento import validate_name
     validate_name(args.name)
     from kento.suspend import resume
-    sys.exit(resume(args.name))
+    sys.exit(resume(args.name, namespace=scope))
 
 
 def _dispatch_exec(args, scope: str | None) -> None:
@@ -771,7 +773,7 @@ def _dispatch_exec(args, scope: str | None) -> None:
     if command and command[0] == "--":
         command = command[1:]
     from kento.exec_cmd import exec_cmd
-    sys.exit(exec_cmd(args.name, command))
+    sys.exit(exec_cmd(args.name, command, namespace=scope))
 
 
 def _dispatch_logs(args, scope: str | None) -> None:
@@ -782,7 +784,7 @@ def _dispatch_logs(args, scope: str | None) -> None:
     if extra and extra[0] == "--":
         extra = extra[1:]
     from kento.logs import logs
-    sys.exit(logs(args.name, extra))
+    sys.exit(logs(args.name, extra, namespace=scope))
 
 
 def _dispatch_list(args, scope: str | None) -> None:
