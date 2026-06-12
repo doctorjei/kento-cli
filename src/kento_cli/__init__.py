@@ -56,11 +56,11 @@ class _DynamicStreamHandler(logging.StreamHandler):
 
     @stream.setter
     def stream(self, value):
-        # logging.StreamHandler.__init__ tries to set self.stream = stream;
-        # accept the assignment only for None (from our super().__init__(None))
-        # so that the property stays in control.
-        if value is not None:
-            self.__dict__["stream"] = value
+        # logging.StreamHandler.__init__ assigns self.stream during construction
+        # (None becomes sys.stderr). Ignore it: the getter is the single source of
+        # truth, resolving sys.<name> live on every emit so capsys / a redirected
+        # sys.stdout|stderr always wins.
+        pass
 
 
 def _configure_logging() -> None:
