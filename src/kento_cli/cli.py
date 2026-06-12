@@ -319,10 +319,14 @@ def _add_commands(subparser, include_create: bool = True,
     p_list.add_argument("-s", "--size", action="store_true", dest="show_size",
                         help="Include the UPPER SIZE column (runs 'du -sh' per "
                              "instance; slow on long-running containers).")
+    p_list.add_argument("--json", action="store_true", dest="as_json",
+                        help="JSON output")
     p_ls = subparser.add_parser("ls", help="List instances")
     p_ls.add_argument("-s", "--size", action="store_true", dest="show_size",
                       help="Include the UPPER SIZE column (runs 'du -sh' per "
                            "instance; slow on long-running containers).")
+    p_ls.add_argument("--json", action="store_true", dest="as_json",
+                      help="JSON output")
 
 
 def _build_top_help() -> str:
@@ -789,7 +793,8 @@ def _dispatch_logs(args, scope: str | None) -> None:
 
 def _dispatch_list(args, scope: str | None) -> None:
     from kento.list import list_containers
-    list_containers(scope=scope, show_size=getattr(args, "show_size", False))
+    list_containers(scope=scope, show_size=getattr(args, "show_size", False),
+                    as_json=getattr(args, "as_json", False))
 
 
 def _dispatch_pull(args) -> None:
