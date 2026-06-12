@@ -4,25 +4,19 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kento"
-version = "1.5.3"
-description = "Compose OCI container images into LXC system containers via overlayfs"
+version = "1.6.0+unstable.1"
+description = "Compose OCI container images into LXC system containers via overlayfs (CLI frontend for kento-core)"
 requires-python = ">=3.11"
 license = "GPL-3.0-only"
+dependencies = ["kento-core==1.6.0+unstable.1"]
 
 [project.scripts]
-kento = "kento.cli:main"
+kento = "kento_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
-[tool.setuptools.package-data]
-kento = ["*.sh"]
-
 [tool.pytest.ini_options]
-# Default collection excludes tests/integration/ so `pytest tests/` only
-# runs the fast unit suite. Run the Tier 1 integration suite via
-# `make test-integration` or `pytest tests/integration/` explicitly.
-# See tests/integration/conftest.py and plans/lxc-in-lxc-tests.md.
 addopts = "--ignore=tests/integration"
 markers = [
     "integration: Tier 1 hook-execution tests (opt in via tests/integration/)",
