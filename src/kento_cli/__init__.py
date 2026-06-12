@@ -30,6 +30,67 @@ def _handle(fn):
         sys.exit(_exit_code(exc))
 
 
+class _MaxLevelFilter(logging.Filter):
+    """Pass only records strictly below `level` (so INFO goes to stdout while
+    WARNING+ is left for the stderr handler)."""
+    def __init__(self, level: int):
+        super().__init__()
+        self._level = level
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.levelno < self._level
+
+
+class _DynamicStreamHandler(logging.StreamHandler):
+    """StreamHandler that looks up sys.stdout or sys.stderr on every emit so
+    pytest's capsys fd-replacement is always honoured."""
+
+    def __init__(self, stream_name: str):
+        # Pass None; we override self.stream below on every emit.
+        super().__init__(None)
+        self._stream_name = stream_name
+
+    @property
+    def stream(self):
+        return getattr(sys, self._stream_name)
+
+    @stream.setter
+    def stream(self, value):
+        # logging.StreamHandler.__init__ tries to set self.stream = stream;
+        # accept the assignment only for None (from our super().__init__(None))
+        # so that the property stays in control.
+        if value is not None:
+            self.__dict__["stream"] = value
+
+
+def _configure_logging() -> None:
+    """Attach handlers to the 'kento' library logger so progress is visible.
+
+    INFO (progress + success) -> stdout; WARNING/ERROR (degraded) -> stderr.
+    Bare '%(message)s' format — the monolith printed plain lines with no level
+    prefix. Idempotent: a sentinel attr prevents duplicate handlers when main()
+    is re-entered in tests."""
+    log = logging.getLogger("kento")
+    if getattr(log, "_kento_cli_configured", False):
+        return
+    log.setLevel(logging.INFO)
+
+    fmt = logging.Formatter("%(message)s")
+
+    out = _DynamicStreamHandler("stdout")
+    out.setLevel(logging.INFO)
+    out.addFilter(_MaxLevelFilter(logging.WARNING))
+    out.setFormatter(fmt)
+
+    err = _DynamicStreamHandler("stderr")
+    err.setLevel(logging.WARNING)
+    err.setFormatter(fmt)
+
+    log.addHandler(out)
+    log.addHandler(err)
+    log._kento_cli_configured = True
+
+
 def _validate_mac(value: str) -> str:
     """argparse type validator for --mac. Accepts unicast MACs; rejects multicast."""
     from kento.vm import is_valid_mac
