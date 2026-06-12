@@ -557,7 +557,8 @@ def main(argv: list[str] | None = None) -> None:
         subcmd = args.command
         args.subcommand = subcmd
 
-    _dispatch(args, scope, subcmd)
+    _configure_logging()
+    _handle(lambda: _dispatch(args, scope, subcmd))
 
 
 def _dispatch(args, scope: str | None, subcmd: str) -> None:
@@ -772,7 +773,7 @@ def _dispatch_multi(args, scope: str | None, subcmd: str) -> None:
             else:  # scope == "vm"
                 from kento import read_mode, resolve_in_namespace
                 container_dir = resolve_in_namespace(container_name, "vm")
-                mode = read_mode(container_dir, "vm")   # default "vm" for legacy instances missing kento-mode
+                mode = read_mode(container_dir, "vm")
 
             if subcmd == "start":
                 from kento.start import start
@@ -793,7 +794,8 @@ def _dispatch_multi(args, scope: str | None, subcmd: str) -> None:
             elif subcmd == "scrub":
                 from kento.reset import reset
                 reset(container_name, container_dir=container_dir, mode=mode)
-        except SystemExit:
+        except KentoError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
             errors += 1
     if errors:
         sys.exit(1)
