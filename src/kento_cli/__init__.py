@@ -1,9 +1,33 @@
 """CLI entry point for kento."""
 
 import argparse
+import logging
 import sys
 
 from kento import __version__
+from kento.errors import KentoError, SubprocessError
+
+
+def _exit_code(exc: KentoError) -> int:
+    """Map a library exception to the process exit code, preserving the
+    monolith's contract: a missing/unexecutable external tool is 2, every
+    other KentoError is 1. (SubprocessError carries returncode=None when the
+    tool could not be launched at all — see kento.subprocess_util.run_or_die.)
+    """
+    if isinstance(exc, SubprocessError) and exc.returncode is None:
+        return 2
+    return 1
+
+
+def _handle(fn):
+    """Run fn(); on KentoError print 'Error: <msg>' to stderr and exit with the
+    mapped code. The CLI is the ONLY place exceptions become exit codes. Any
+    return value of fn is passed through untouched on success."""
+    try:
+        return fn()
+    except KentoError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(_exit_code(exc))
 
 
 def _validate_mac(value: str) -> str:
