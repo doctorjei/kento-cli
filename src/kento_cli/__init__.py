@@ -880,8 +880,9 @@ def _dispatch_logs(args, scope: str | None) -> None:
 
 def _dispatch_list(args, scope: str | None) -> None:
     from kento.list import list_containers
-    list_containers(scope=scope, show_size=getattr(args, "show_size", False),
-                    as_json=getattr(args, "as_json", False))
+    print(list_containers(scope=scope,
+                          show_size=getattr(args, "show_size", False),
+                          as_json=getattr(args, "as_json", False)))
 
 
 def _dispatch_pull(args) -> None:
