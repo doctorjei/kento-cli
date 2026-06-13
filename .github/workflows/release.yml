@@ -1,4 +1,15 @@
-# Tag-driven rc-then-promote release pipeline for the `kento` PyPI package.
+# Tag-driven rc-then-promote release pipeline for the `kento` PyPI package
+# (the thin CLI; PyPI/distribution name `kento`, import/source name `kento_cli`).
+#
+# This is the STABLE half of the split: it ships normal X.Y.Z releases via
+# rc-then-promote. It DEPENDS on the unstable library `kento-core==<ver>.devN`
+# (see pyproject.toml). Because that dependency is an EXACT `==` pin to a
+# PEP440 pre-release, `pip install kento` resolves it WITHOUT needing `--pre`
+# (the exact pin makes pip select the pre-release) — but ONLY once kento-core
+# has actually been published to PyPI. Publish ordering is therefore:
+# **kento-core FIRST, then kento**. This workflow does not install/smoke-test
+# the built wheel, so there is no chicken-and-egg in CI itself; the ordering
+# constraint applies to downstream consumers and to any future install step.
 #
 # Flow (matches the gemet/kanibako/droste ecosystem shape, simplified for a
 # single PyPI package with NO container images):
@@ -19,6 +30,11 @@
 # Unlike the image repos we cannot byte-copy an rc artifact to the release
 # version (PyPI filenames embed the version), so `publish` rebuilds at the final
 # version. That is expected and matches kanibako's PyPI path.
+#
+# NOTE: the version guard reads the package version from pyproject.toml, which
+# is the CLI's own `kento` version (1.6.0) — NOT `import kento` (that's the
+# library). No import-based version check is used, so the rename is transparent
+# here.
 
 name: release
 
