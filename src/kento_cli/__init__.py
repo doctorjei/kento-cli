@@ -590,12 +590,12 @@ def _dispatch(args, scope: str | None, subcmd: str) -> None:
         _dispatch_pull(args)
     elif subcmd == "images":
         from kento.images import list_images
-        list_images(in_use_only=args.in_use)
+        print(list_images(in_use_only=args.in_use))
     elif subcmd == "prune":
         from kento import require_root
         require_root()
         from kento.images import prune
-        prune(yes=args.yes)
+        print(prune(yes=args.yes))
 
 
 def _parse_network(network_str: str | None, mode: str | None) -> tuple[str | None, str | None]:
