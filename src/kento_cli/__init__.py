@@ -206,6 +206,13 @@ def _validate_ip(value: str) -> str:
     return value
 
 
+def _validate_ip_or_dhcp(value: str) -> str:
+    """argparse validator for `set --ip`: a CIDR address, or 'dhcp' to clear."""
+    if value == "dhcp":
+        return value
+    return _validate_ip(value)
+
+
 def _add_create_args(parser, *, scope: str | None = None) -> None:
     """Add the common arguments shared by 'create' and 'run' subcommands."""
     parser.add_argument("image", help="OCI image reference")
@@ -398,6 +405,24 @@ def _add_commands(subparser, include_create: bool = True,
                        help="Replace the plain-LXC native config pass-through "
                             "list (plain LXC only, repeatable). Pass "
                             "--lxc-arg '' to clear.")
+    p_set.add_argument("--network", default=None, dest="network",
+                       help="Network mode: bridge, bridge=<name>, host, "
+                            "usermode, none")
+    p_set.add_argument("--ip", default=None, dest="ip",
+                       type=_validate_ip_or_dhcp,
+                       help="Static IP with prefix (e.g. 192.168.0.10/24), or "
+                            "'dhcp' to clear the static address "
+                            "(requires bridge networking)")
+    p_set.add_argument("--gateway", default=None, dest="gateway",
+                       help="Default gateway (requires a static --ip)")
+    p_set.add_argument("--dns", default=None, dest="dns",
+                       help="DNS server")
+    p_set.add_argument("--hostname", default=None, dest="hostname",
+                       help="Instance hostname")
+    p_set.add_argument("--port", action="append", default=None, dest="port",
+                       metavar="HOST:GUEST",
+                       help="Port forwarding HOST:GUEST (usermode VM or bridge "
+                            "LXC/PVE). Pass --port '' to clear.")
 
     p_suspend = subparser.add_parser(
         "suspend",
@@ -868,6 +893,8 @@ def _dispatch_set(args, scope: str | None) -> None:
     sys.exit(set_cmd(args.name, memory=args.memory, cores=args.cores,
                      mac=args.mac, qemu_args=args.qemu_args,
                      pve_args=args.pve_args, lxc_args=args.lxc_args,
+                     network=args.network, ip=args.ip, gateway=args.gateway,
+                     dns=args.dns, hostname=args.hostname, port=args.port,
                      namespace=scope))
 
 

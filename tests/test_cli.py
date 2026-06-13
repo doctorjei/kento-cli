@@ -1272,6 +1272,59 @@ class TestMacFlag:
         assert m.call_args[1]["mac"] == "52:54:00:11:22:33"
 
 
+class TestSetNetworkFlags:
+    """`kento set` network flags thread through to set_cmd (v1.6.0)."""
+
+    def _run_set(self, argv):
+        with patch("kento.set_cmd.set_cmd",
+                   MagicMock(return_value=0)) as m, \
+             pytest.raises(SystemExit) as exc:
+            main(argv)
+        assert exc.value.code == 0
+        m.assert_called_once()
+        return m.call_args[1]
+
+    def test_set_network_threads_through(self):
+        kw = self._run_set(["lxc", "set", "box", "--network", "host"])
+        assert kw["network"] == "host"
+        assert kw["namespace"] == "lxc"
+
+    def test_set_ip_gateway_dns_hostname_thread_through(self):
+        kw = self._run_set([
+            "set", "box", "--ip", "192.168.0.10/24",
+            "--gateway", "192.168.0.1", "--dns", "1.1.1.1",
+            "--hostname", "myhost"])
+        assert kw["ip"] == "192.168.0.10/24"
+        assert kw["gateway"] == "192.168.0.1"
+        assert kw["dns"] == "1.1.1.1"
+        assert kw["hostname"] == "myhost"
+
+    def test_set_port_is_repeatable_list(self):
+        kw = self._run_set(["set", "box", "--port", "10022:22"])
+        assert kw["port"] == ["10022:22"]
+
+    def test_set_port_clear_sentinel(self):
+        kw = self._run_set(["set", "box", "--port", ""])
+        assert kw["port"] == [""]
+
+    def test_set_network_bridge_threads_through(self):
+        kw = self._run_set(["vm", "set", "box", "--network", "usermode"])
+        assert kw["network"] == "usermode"
+        assert kw["namespace"] == "vm"
+
+    def test_set_no_net_flags_are_none(self):
+        kw = self._run_set(["set", "box", "--memory", "1024"])
+        assert kw["network"] is None
+        assert kw["ip"] is None
+        assert kw["port"] is None
+
+    def test_set_ip_validated_at_parse_time(self, capsys):
+        """--ip reuses create's _validate_ip, so a bad value exits 2."""
+        with pytest.raises(SystemExit) as exc:
+            main(["set", "box", "--ip", "notanip"])
+        assert exc.value.code == 2
+
+
 class TestPortNetworkValidation:
     """Tests for --port + --network CLI-level validation (Phase 3)."""
 
