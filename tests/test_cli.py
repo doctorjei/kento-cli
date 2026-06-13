@@ -391,6 +391,20 @@ class TestAllowNestingFlag:
         assert "--nesting" in err or "unrecognized" in err
 
 
+class TestUnprivilegedFlag:
+    """--unprivileged flag is parsed and threaded to create()."""
+
+    def test_default_off(self):
+        with patch("kento.create.create") as mock_create:
+            main(["lxc", "create", "myimg"])
+        assert mock_create.call_args.kwargs["unprivileged"] is False
+
+    def test_unprivileged_on(self):
+        with patch("kento.create.create") as mock_create:
+            main(["lxc", "create", "--unprivileged", "myimg"])
+        assert mock_create.call_args.kwargs["unprivileged"] is True
+
+
 class TestTopLevelHelp:
     """Test top-level help includes both lxc and vm groups."""
 

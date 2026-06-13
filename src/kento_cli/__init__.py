@@ -226,6 +226,13 @@ def _add_create_args(parser, *, scope: str | None = None) -> None:
                              "VM modes: the guest is exposed CPU virtualization "
                              "extensions (vmx/svm) so it can run hardware-accelerated "
                              "VMs. Default: off.")
+    parser.add_argument("--unprivileged", action="store_true",
+                        default=False, dest="unprivileged",
+                        help="Create an unprivileged LXC container (plain LXC "
+                             "modes only). Maps container root to an "
+                             "unprivileged host UID/GID range and idmaps the "
+                             "rootfs. Requires a kernel with overlay "
+                             "idmapped-mount support; fails closed otherwise.")
     parser.add_argument("--pve", action=argparse.BooleanOptionalAction, default=None,
                         help="Force or prevent PVE integration (default: auto-detect)")
     parser.add_argument("--vmid", type=int, default=0, help="PVE VMID (auto-assigned if omitted)")
@@ -810,6 +817,7 @@ def _dispatch_create(args, scope: str | None) -> None:
            pve_args=getattr(args, "pve_args", None),
            lxc_args=getattr(args, "lxc_args", None),
            net_type=net_type,
+           unprivileged=args.unprivileged,
            force=args.force)
 
 
