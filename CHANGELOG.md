@@ -22,12 +22,11 @@ and built on the `kento-core` library.
   `problem_count`). Exit code is `1` if any warn/error finding is present, else
   `0`. Top-level only (no `kento lxc diagnose` / `kento vm diagnose`); degrades
   gracefully without root.
-- **`kento create --unprivileged` flag (LXC)** — opt-in unprivileged plain-LXC
-  container. **Currently kernel-gated and fails closed** in the library: overlayfs
-  cannot be idmapped on current mainline kernels, so the flag errors clearly
-  rather than producing a broken container, and becomes usable automatically once
-  a kernel ships overlay idmapped-mount support. Plain `lxc` only (rejected for VM
-  modes and `pve-lxc`). The default remains privileged.
+- **`kento create --unprivileged` flag (lxc + pve-lxc)** — opt-in unprivileged
+  LXC container via per-layer idmapped overlay mounts. Maps container root to an
+  unprivileged host UID/GID range; rejected for VM modes. Requires kernel >= 5.19
+  and util-linux >= 2.40; fails closed with a clear error otherwise. The default
+  remains privileged.
 
 ### Changed
 

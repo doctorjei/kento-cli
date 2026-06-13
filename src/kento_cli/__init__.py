@@ -228,11 +228,12 @@ def _add_create_args(parser, *, scope: str | None = None) -> None:
                              "VMs. Default: off.")
     parser.add_argument("--unprivileged", action="store_true",
                         default=False, dest="unprivileged",
-                        help="Create an unprivileged LXC container (plain LXC "
-                             "modes only). Maps container root to an "
-                             "unprivileged host UID/GID range and idmaps the "
-                             "rootfs. Requires a kernel with overlay "
-                             "idmapped-mount support; fails closed otherwise.")
+                        help="Create an unprivileged LXC container (plain-lxc "
+                             "and pve-lxc; rejected for VM modes). Maps "
+                             "container root to an unprivileged host UID/GID "
+                             "range via per-layer idmapped overlay mounts. "
+                             "Requires kernel >= 5.19 and util-linux >= 2.40; "
+                             "fails closed with a clear error otherwise.")
     parser.add_argument("--pve", action=argparse.BooleanOptionalAction, default=None,
                         help="Force or prevent PVE integration (default: auto-detect)")
     parser.add_argument("--vmid", type=int, default=0, help="PVE VMID (auto-assigned if omitted)")
