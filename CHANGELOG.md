@@ -5,6 +5,41 @@ All notable changes to kento are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - kento 1.6.0
+
+First release of `kento` as the thin standalone CLI, split out of the monolith
+and built on the `kento-core` library.
+
+### Added
+
+- **`kento diagnose` verb** — a read-only health/triage command over the
+  `kento-core` diagnostics. `kento diagnose [NAME] [--json]` scans the whole host
+  (or one instance) and reports problems across eight categories: orphaned
+  instances, the AppArmor pre-flight, port-forward state, stale image holds,
+  networkd drop-ins, the cloud-init root-ssh footgun, leaked overlay/virtiofsd
+  mounts, and PVE vmid allocation. `--json` emits a structured report (array of
+  findings with `category`/`severity`/`scope`/`message`/`remediation`, plus
+  `problem_count`). Exit code is `1` if any warn/error finding is present, else
+  `0`. Top-level only (no `kento lxc diagnose` / `kento vm diagnose`); degrades
+  gracefully without root.
+- **`kento create --unprivileged` flag (LXC)** — opt-in unprivileged plain-LXC
+  container. **Currently kernel-gated and fails closed** in the library: overlayfs
+  cannot be idmapped on current mainline kernels, so the flag errors clearly
+  rather than producing a broken container, and becomes usable automatically once
+  a kernel ships overlay idmapped-mount support. Plain `lxc` only (rejected for VM
+  modes and `pve-lxc`). The default remains privileged.
+
+### Changed
+
+- **`kento set` accepts network flags** (additive). In addition to the existing
+  `--memory` / `--cores` / `--mac` / `--qemu-arg` / `--pve-arg` / `--lxc-arg`,
+  `set` now takes `--network bridge[=<name>]|usermode|host|none`, `--ip
+  CIDR|dhcp`, `--gateway`, `--dns`, `--hostname`, and `--port HOST:GUEST`
+  (repeatable; empty value clears). The instance must be stopped; changes take
+  effect on next start. Per-mode validity: bridge = `lxc`/`pve-lxc`/`pve-vm` (not
+  plain `vm`); usermode = `vm`/`pve-vm`; host = `lxc` modes; none = all;
+  `--ip`/`--gateway` require bridge networking; `--port` invalid on host/none.
+
 ## [1.5.3] - 2026-06-12
 
 Patch release: one machine-readability feature plus two robustness fixes, each
