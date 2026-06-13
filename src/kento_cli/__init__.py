@@ -3,9 +3,18 @@
 import argparse
 import logging
 import sys
+from importlib.metadata import version as _dist_version
 
-from kento import __version__
 from kento.errors import KentoError, SubprocessError
+
+try:
+    # Report the CLI's OWN version (the `kento` dist), not the library's. The
+    # two diverge during the cooking phase: `kento` is a stable release while
+    # `kento-core` rides `.devN` pre-releases (see design §6). Reading the
+    # library's __version__ here would make a stable CLI mis-report as a .dev.
+    __version__ = _dist_version("kento")
+except Exception:  # running from a raw checkout, not an installed dist
+    __version__ = "unknown"
 
 
 def _exit_code(exc: KentoError) -> int:
