@@ -819,8 +819,8 @@ def _dispatch_info(args, scope: str | None) -> None:
         mode = read_mode(container_dir, "vm")
 
     from kento.info import info
-    info(args.name, container_dir=container_dir, mode=mode,
-         as_json=args.as_json, verbose=args.verbose)
+    print(info(args.name, container_dir=container_dir, mode=mode,
+               as_json=args.as_json, verbose=args.verbose))
 
 
 def _dispatch_attach(args, scope: str | None) -> None:
