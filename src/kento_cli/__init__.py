@@ -448,6 +448,7 @@ Shortcuts:
   pull                Pull an OCI image
   images              List kento-managed OCI images
   prune               Remove orphaned hold containers and freed images
+  diagnose            Read-only health scan of instances and the host
 
 Options:
   --version           Show version and exit
@@ -533,6 +534,15 @@ def main(argv: list[str] | None = None) -> None:
     p_prune.add_argument("--yes", action="store_true",
                          help="Actually remove (default: dry-run)")
 
+    p_diagnose = top_sub.add_parser(
+        "diagnose",
+        help="Run a read-only health scan of kento instances and the host")
+    p_diagnose.add_argument("name", nargs="?", default=None, metavar="NAME",
+                            help="Scope checks to one instance (host-level "
+                                 "checks still run); omit for a host-wide scan")
+    p_diagnose.add_argument("--json", action="store_true", dest="as_json",
+                            help="Emit the raw report as JSON")
+
     # -- lxc subcommand group (kento lxc create, ...) --
     p_lxc = top_sub.add_parser("lxc", help="Manage LXC instances")
     p_lxc.format_help = _build_lxc_help
@@ -605,6 +615,18 @@ def _dispatch(args, scope: str | None, subcmd: str) -> None:
         require_root()
         from kento.images import prune
         print(prune(yes=args.yes))
+    elif subcmd == "diagnose":
+        import json
+        from kento.diagnose import run_diagnostics, format_diagnostics
+        # diagnose degrades without root (the library handles it); do NOT
+        # require_root() here. getattr guards against the top-level positional
+        # `name` being absent / collapsed to "" by the argparse layer.
+        report = run_diagnostics(getattr(args, "name", None) or None)
+        if args.as_json:
+            print(json.dumps(report, indent=2))
+        else:
+            print(format_diagnostics(report))
+        sys.exit(1 if report["problem_count"] else 0)
 
 
 def _parse_network(network_str: str | None, mode: str | None) -> tuple[str | None, str | None]:
