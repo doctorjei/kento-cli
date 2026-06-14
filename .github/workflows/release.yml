@@ -70,6 +70,14 @@ jobs:
         # pyproject declares no test extras; pytest is the only test dep.
         run: python -m pip install --upgrade pip build twine pytest
 
+      - name: Install the split library dependency (kento-core)
+        # Post-split, `kento` (the library package) is NOT in this repo's src/;
+        # it ships as the pinned `kento-core==<ver>.devN` dependency. The test
+        # suite imports `kento`, so install the project to pull that dep from
+        # PyPI (kento-core must be published FIRST — library-first ordering).
+        # Installing `.` keeps the version a single source of truth (pyproject).
+        run: python -m pip install .
+
       - name: Validate release tag shape
         # Only enforce on tag pushes; workflow_dispatch has no tag.
         if: startsWith(github.ref, 'refs/tags/')
