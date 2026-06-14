@@ -371,6 +371,45 @@ sudo kento destroy -f <name>
 and its writable layer. Errors if the instance is running unless
 `-f` / `--force` is passed (which stops it first).
 
+### Prune
+
+```
+sudo kento prune                 # dry-run: orphaned holds + freed images
+sudo kento prune --yes           # actually reclaim holds + images
+sudo kento prune --orphans       # dry-run: also list orphaned instance state
+sudo kento prune --orphans --yes # also discard orphaned instance state
+```
+
+Bare `prune` reclaims orphaned hold containers and freed kento-managed images
+(dry-run by default; `--yes` to act). `--orphans` adds a separately sectioned
+pass that discards **orphaned instances** — a pve-lxc / pve-vm whose state dir
+survives but whose PVE `.conf` was destroyed out-of-band. This pass has a
+heavier blast radius (it throws instance state away), so it is opt-in, dry-run
+by default, and only acts under `--yes`. Output is sectioned (`Images:` /
+`Holds:` / `Orphans:`). Per-orphan failure is isolated and reported; the rest
+continue. To *heal* an orphan instead of discarding it, see `adopt` below.
+
+### Adopt
+
+```
+sudo kento adopt <name>
+```
+
+Heals a single **orphaned** PVE instance by regenerating its missing PVE config
+from surviving kento state, bringing it back as a known instance. Run
+`kento start <name>` afterwards — `adopt` never auto-starts or re-mounts the
+rootfs. It resolves the name across both namespaces (like `destroy`) and applies
+to pve-lxc / pve-vm only.
+
+`adopt` is the **heal** counterpart to the **discard** path (`destroy -f` /
+`prune --orphans`): the PVE `.conf` is a derived artifact and kento's state dir
+is closer to source-of-truth, so kento can rebuild the config from state. Because
+intent is unknowable — a deliberate kill versus a glitch victim — adopt is
+deliberately **per-instance only** (no "adopt all"); resurrecting a
+deliberately-killed instance is the costly wrong guess. It fails closed, refusing
+when the target is not an orphan, when its vmid is now occupied by a different
+instance, when the mode is non-PVE, or when required network metadata is missing.
+
 ## Runtime layout
 
 ```

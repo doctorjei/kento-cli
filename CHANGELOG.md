@@ -5,6 +5,45 @@ All notable changes to kento are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.1] - 2026-06-14
+
+Bug fix: the durable orphan-vmid reconcile. An **orphan** is a pve-lxc / pve-vm
+instance whose state dir survives but whose PVE `.conf` was destroyed
+out-of-band (a direct `pct`/`qm destroy`, a pmxcfs glitch, or a crash
+mid-operation). 1.5.3 kept an orphan's vmid from being *reassigned* and 1.6.0's
+`diagnose` *detects* orphans; this release adds the remediation surface that
+closes the long-open orphan gap. Depends on `kento-core` 1.6.0.dev2.
+
+### Added
+
+- **`kento prune --orphans [--yes]`** — batch-discards orphaned instance state.
+  Bare `kento prune` is **unchanged** (it still removes only orphaned hold
+  containers and freed images); `--orphans` adds a separately sectioned
+  orphan-reaping pass with a heavier blast radius (it discards instance state).
+  Dry-run by default — it lists what *would* be destroyed; `--yes` actually
+  `destroy -f`s each orphan. Per-orphan failure is isolated and reported, the
+  rest continue. Output is sectioned (`Images:` / `Holds:` / `Orphans:`) so the
+  added blast radius is visible.
+- **`kento adopt <name>`** — heals one orphan by regenerating its missing PVE
+  config from surviving kento state, bringing the instance back as a known
+  instance; run `kento start <name>` afterwards (adopt never auto-starts or
+  re-mounts the rootfs). Top-level shortcut that resolves the name across both
+  namespaces like `destroy`; pve-lxc / pve-vm only. It is deliberately
+  per-instance only — there is no "adopt all" (see below). It fails closed,
+  refusing when the target is not an orphan, when the vmid is now occupied by a
+  different instance, when the mode is non-PVE, or when required network metadata
+  is missing.
+
+### Fixed
+
+- **Durable orphan-vmid reconcile** (the long-open gap; interim guard shipped
+  1.5.3, this is the durable fix). The two verbs above give an operator the two
+  opposite responses to an orphan: **discard** it (`prune --orphans` / the
+  existing `destroy -f`), or **heal** it (`adopt`). Because intent is unknowable —
+  a deliberate kill versus a glitch victim — neither is silent or automatic, and
+  only discard may be batched; resurrecting a deliberately-killed instance is the
+  costly wrong guess, so adopt stays per-instance.
+
 ## [1.6.0] - 2026-06-14
 
 First release of `kento` as the thin standalone CLI, split out of the monolith

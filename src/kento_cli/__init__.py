@@ -481,7 +481,9 @@ Shortcuts:
   pull                Pull an OCI image
   images              List kento-managed OCI images
   prune               Remove orphaned hold containers and freed images
+                      (--orphans also reaps orphaned instance state)
   diagnose            Read-only health scan of instances and the host
+  adopt               Adopt an orphaned PVE instance (regenerate its config)
 
 Options:
   --version           Show version and exit
@@ -563,9 +565,14 @@ def main(argv: list[str] | None = None) -> None:
                           help="Show only images referenced by an existing guest")
 
     p_prune = top_sub.add_parser(
-        "prune", help="Remove orphaned kento hold containers and freed images")
+        "prune",
+        help="Remove orphaned kento hold containers and freed images "
+             "(--orphans also reaps orphaned instance state)")
     p_prune.add_argument("--yes", action="store_true",
                          help="Actually remove (default: dry-run)")
+    p_prune.add_argument("--orphans", action="store_true",
+                         help="Also discard orphaned PVE instance state "
+                              "(state dir survives but the PVE config is gone)")
 
     p_diagnose = top_sub.add_parser(
         "diagnose",
@@ -575,6 +582,13 @@ def main(argv: list[str] | None = None) -> None:
                                  "checks still run); omit for a host-wide scan")
     p_diagnose.add_argument("--json", action="store_true", dest="as_json",
                             help="Emit the raw report as JSON")
+
+    p_adopt = top_sub.add_parser(
+        "adopt",
+        help="Adopt an orphaned PVE instance by regenerating its missing "
+             "PVE config from surviving kento state")
+    p_adopt.add_argument("name", metavar="NAME",
+                         help="Name of the orphaned PVE instance to adopt")
 
     # -- lxc subcommand group (kento lxc create, ...) --
     p_lxc = top_sub.add_parser("lxc", help="Manage LXC instances")
@@ -647,7 +661,16 @@ def _dispatch(args, scope: str | None, subcmd: str) -> None:
         from kento import require_root
         require_root()
         from kento.images import prune
+        # Bare prune (images/holds) is unchanged. --orphans ADDS a separately
+        # sectioned orphan-reaping pass (heavier blast radius — discards
+        # instance state), dry-run by default and acting only under --yes,
+        # consistent with how prune treats --yes.
         print(prune(yes=args.yes))
+        if args.orphans:
+            from kento.reconcile import reap_orphans, format_reap
+            results = reap_orphans(reap=args.yes)
+            print()
+            print(format_reap(results, reaped=args.yes))
     elif subcmd == "diagnose":
         import json
         from kento.diagnose import run_diagnostics, format_diagnostics
@@ -660,6 +683,13 @@ def _dispatch(args, scope: str | None, subcmd: str) -> None:
         else:
             print(format_diagnostics(report))
         sys.exit(1 if report["problem_count"] else 0)
+    elif subcmd == "adopt":
+        from kento import require_root
+        require_root()
+        from kento.reconcile import adopt
+        result = adopt(args.name)
+        print(f"adopted '{result['name']}' (vmid {result['vmid']}); "
+              f"run 'kento start {result['name']}'")
 
 
 def _parse_network(network_str: str | None, mode: str | None) -> tuple[str | None, str | None]:
