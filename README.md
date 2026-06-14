@@ -343,10 +343,12 @@ categories:
 - **leaked mounts** — overlay / virtiofsd left behind
 - **PVE vmid allocation** — reserved-but-orphaned VMIDs
 
-`--json` emits a structured report: an array of findings, each with
-`category`, `severity`, `scope`, `message`, and `remediation`, plus a
-top-level `problem_count`. The exit code is `1` if any `warn`/`error`
-finding is present, otherwise `0`. The command degrades gracefully without
+`--json` emits a structured report object: `{"checks": [...],
+"problem_count": <int>, "instances_scanned": <int>}`. Each entry in `checks`
+has `category`, `severity`, `scope`, `message`, and `remediation`;
+`problem_count` is the number of `warn`/`error` findings (consumers parse
+`report["checks"]`, not the top level). The exit code is `1` if any
+`warn`/`error` finding is present (i.e. `problem_count > 0`), otherwise `0`. The command degrades gracefully without
 root (checks needing privilege are skipped). It is top-level only — there
 is no `kento lxc diagnose` / `kento vm diagnose`.
 
