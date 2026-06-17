@@ -530,14 +530,16 @@ class TestPruneCommand:
     def test_prune_dispatches_dry_run(self):
         """kento prune (no --yes) calls prune with yes=False, requires root."""
         with patch("kento.require_root"), \
-             patch("kento.images.prune") as mock_prune:
+             patch("kento.images.prune",
+                   return_value=("", 0)) as mock_prune:
             main(["prune"])
         mock_prune.assert_called_once_with(yes=False)
 
     def test_prune_yes_flag(self):
         """kento prune --yes sets yes=True."""
         with patch("kento.require_root"), \
-             patch("kento.images.prune") as mock_prune:
+             patch("kento.images.prune",
+                   return_value=("", 0)) as mock_prune:
             main(["prune", "--yes"])
         mock_prune.assert_called_once_with(yes=True)
 

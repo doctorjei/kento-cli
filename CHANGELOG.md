@@ -5,6 +5,38 @@ All notable changes to kento are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.2] - 2026-06-17
+
+Bug-fix and hardening release. Rides `kento-core` 1.6.0.dev3, which fixes three
+real-world boot/runtime failures and one latent image-hold leak: modern-systemd
+(Debian 13 / systemd 257) pve-lxc and plain-lxc guests booting network-dead under
+AppArmor 4.x (narrow `lxc.apparmor.raw` grant instead of denied `userns_create` /
+over-broad `allow_nesting`); pve-lxc guests silently capped at PVE's 512 MiB
+default memory (now an explicit unlimited sentinel); large multi-layer images
+failing to mount when the overlay options string exceeded the kernel's 4096-byte
+page limit (short `l/<id>`-link + chdir mount, plus fail-closed layer/name
+pre-flights); and `scrub` leaving the image hold pinned to the old image after an
+image-tag move (now re-pins, with `diagnose` reporting hold/guest image-ID drift).
+
+### Changed
+
+- **VM-mode default memory raised from 512 MB to 1024 MB** (cores default
+  unchanged at 1). The hardcoded 512 MB was too small for typical workloads;
+  `--memory` overrides as before. Applies to `vm` and `pve-vm`. The `--memory`
+  help text now reads `default: 1024 for VM, unset for LXC`.
+
+### Fixed
+
+- **`kento prune` no longer swallows image-removal failures.** When `podman image
+  rm` fails on an image prune already determined was safe to remove (an external
+  non-kento reference, or a kento-accounting mismatch), prune now lists each
+  failed image and its reason in the summary and **exits non-zero** — previously
+  it was logged at warning level and omitted from the summary, so a real
+  discrepancy read as a clean success. Successful and dry-run prunes are
+  unchanged (and still exit 0).
+
+Depends on `kento-core` 1.6.0.dev3.
+
 ## [1.6.1] - 2026-06-14
 
 Bug fix: the durable orphan-vmid reconcile. An **orphan** is a pve-lxc / pve-vm

@@ -27,14 +27,14 @@ class TestPruneOrphans:
     def test_bare_prune_does_not_touch_orphans(self):
         """kento prune (no --orphans) must NOT call reap_orphans at all."""
         with patch("kento.require_root"), \
-             patch("kento.images.prune", return_value="IMAGES-OUT"), \
+             patch("kento.images.prune", return_value=("IMAGES-OUT", 0)), \
              patch("kento.reconcile.reap_orphans") as reap:
             main(["prune"])
         reap.assert_not_called()
 
     def test_bare_prune_yes_does_not_touch_orphans(self):
         with patch("kento.require_root"), \
-             patch("kento.images.prune", return_value="IMAGES-OUT"), \
+             patch("kento.images.prune", return_value=("IMAGES-OUT", 0)), \
              patch("kento.reconcile.reap_orphans") as reap:
             main(["prune", "--yes"])
         reap.assert_not_called()
@@ -42,7 +42,7 @@ class TestPruneOrphans:
     def test_orphans_dry_run_lists_but_does_not_reap(self, capsys):
         """prune --orphans (no --yes) calls reap_orphans(reap=False)."""
         with patch("kento.require_root"), \
-             patch("kento.images.prune", return_value="IMAGES-OUT"), \
+             patch("kento.images.prune", return_value=("IMAGES-OUT", 0)), \
              patch("kento.reconcile.reap_orphans",
                    return_value=_orphan_results()) as reap, \
              patch("kento.reconcile.format_reap",
@@ -59,7 +59,7 @@ class TestPruneOrphans:
     def test_orphans_yes_triggers_reap(self, capsys):
         """prune --orphans --yes calls reap_orphans(reap=True)."""
         with patch("kento.require_root"), \
-             patch("kento.images.prune", return_value="IMAGES-OUT"), \
+             patch("kento.images.prune", return_value=("IMAGES-OUT", 0)), \
              patch("kento.reconcile.reap_orphans",
                    return_value=_orphan_results()) as reap, \
              patch("kento.reconcile.format_reap",

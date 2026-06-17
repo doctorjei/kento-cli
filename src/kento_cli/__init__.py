@@ -238,7 +238,7 @@ def _add_create_args(parser, *, scope: str | None = None) -> None:
                         help="Force or prevent PVE integration (default: auto-detect)")
     parser.add_argument("--vmid", type=int, default=0, help="PVE VMID (auto-assigned if omitted)")
     parser.add_argument("--memory", type=_validate_memory, default=None,
-                        help="Memory in MB (default: 512 for VM, unset for LXC)")
+                        help="Memory in MB (default: 1024 for VM, unset for LXC)")
     parser.add_argument("--cores", type=_validate_cores, default=None,
                         help="Number of CPU cores (default: 1 for VM, unset for LXC)")
     parser.add_argument("--port", default=None, type=_validate_port,
@@ -665,12 +665,19 @@ def _dispatch(args, scope: str | None, subcmd: str) -> None:
         # sectioned orphan-reaping pass (heavier blast radius — discards
         # instance state), dry-run by default and acting only under --yes,
         # consistent with how prune treats --yes.
-        print(prune(yes=args.yes))
+        text, prune_failures = prune(yes=args.yes)
+        print(text)
         if args.orphans:
             from kento.reconcile import reap_orphans, format_reap
             results = reap_orphans(reap=args.yes)
             print()
             print(format_reap(results, reaped=args.yes))
+        # Exit non-zero after the --orphans section prints, so both
+        # outputs show. prune only ever targets images it already
+        # determined were safe to remove, so a removal failure signals
+        # an external reference or an accounting mismatch.
+        if prune_failures:
+            sys.exit(1)
     elif subcmd == "diagnose":
         import json
         from kento.diagnose import run_diagnostics, format_diagnostics
