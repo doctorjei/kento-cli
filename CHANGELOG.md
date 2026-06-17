@@ -5,6 +5,17 @@ All notable changes to kento are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **`kento vm create --cores` / `kento set --cores` clamp to node CPU count.**
+  Requesting more vCPUs than the node has previously produced an unstartable VM
+  (creates, then `qm start` refuses). kento now clamps the request down to the
+  node's logical CPU count and logs a warning explaining the clamp. VM modes only
+  (`vm`, `pve-vm`); LXC is unaffected. Memory over-requests warn but are not
+  clamped (KVM overcommit is legitimate). Implemented in `kento-core`.
+
 ## [1.6.2] - 2026-06-17
 
 Bug-fix and hardening release. Rides `kento-core` 1.6.0.dev3, which fixes three
