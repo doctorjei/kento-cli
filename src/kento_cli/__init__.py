@@ -241,8 +241,10 @@ def _add_create_args(parser, *, scope: str | None = None) -> None:
                         help="Memory in MB (default: 1024 for VM, unset for LXC)")
     parser.add_argument("--cores", type=_validate_cores, default=None,
                         help="Number of CPU cores (default: 1 for VM, unset for LXC)")
-    parser.add_argument("--port", default=None, type=_validate_port,
-                        help="Port forwarding host:guest (e.g. 10022:22)")
+    parser.add_argument("--port", action="append", default=None,
+                        type=_validate_port,
+                        help="Port forwarding host:guest (e.g. 10022:22). "
+                             "Repeatable for multiple forwards.")
     parser.add_argument("--ip", default=None, type=_validate_ip,
                         help="Static IP address with prefix (e.g. 192.168.0.160/22)")
     parser.add_argument("--gateway", default=None,
@@ -730,7 +732,6 @@ def _parse_network(network_str: str | None, mode: str | None) -> tuple[str | Non
 
 def _dispatch_create(args, scope: str | None) -> None:
     from kento import validate_name
-    from kento.create import create
 
     # Validate explicit --name up front so bad names fail fast, before root
     # check, conflict scan, or any filesystem writes.
@@ -828,25 +829,189 @@ def _dispatch_create(args, scope: str | None) -> None:
               file=sys.stderr)
         sys.exit(1)
 
-    create(args.image, name=args.name, bridge=bridge_name,
-           nesting=args.allow_nesting,
-           start=args.start, mode=mode, pve=args.pve, vmid=args.vmid,
-           memory=args.memory, cores=args.cores,
-           port=args.port, ip=args.ip, gateway=args.gateway,
-           dns=args.dns, searchdomain=args.searchdomain,
-           timezone=args.timezone, env=args.env,
-           ssh_keys=args.ssh_keys,
-           ssh_key_user=args.ssh_key_user,
-           ssh_host_keys=args.ssh_host_keys,
-           ssh_host_key_dir=args.ssh_host_key_dir,
-           mac=args.mac,
-           config_mode=args.config_mode,
-           qemu_args=getattr(args, "qemu_args", None),
-           pve_args=getattr(args, "pve_args", None),
-           lxc_args=getattr(args, "lxc_args", None),
-           net_type=net_type,
-           unprivileged=args.unprivileged,
-           force=args.force)
+    # Re-pointed onto the typed M15/M16 create (Phase 6, CLASSES-ONLY seam):
+    # decompose the flat flags into the typed parameter objects the typed
+    # `SystemContainer.create` / `VirtualMachine.create` take, then call it. The
+    # CLI-level pre-checks above (scope/mode validity, name conflict, port-vs-
+    # network) are unchanged — they fail fast before any library call.
+    from kento import (
+        SystemContainer,
+        VirtualMachine,
+        parse_forwards,
+    )
+
+    # --network/--ip/--gateway/--dns/--mac -> a NetworkConnection (or None to let
+    # create.py auto-detect, preserving today's no---network behavior).
+    network = _build_create_network(
+        net_type, bridge_name, args.ip, args.gateway, args.dns, args.mac)
+
+    # --memory/--cores -> the typed resources bag (only the keys provided).
+    resources: dict[str, int] = {}
+    if args.memory is not None:
+        resources["memory"] = args.memory
+    if args.cores is not None:
+        resources["cores"] = args.cores
+
+    # --env KEY=VALUE -> the typed environment map (create.py validates each).
+    environment = _env_list_to_map(args.env)
+
+    # --port (repeatable) -> the typed forwards map (declarative). The typed
+    # create renders it back to create.py's port spec list (§5.7).
+    forwards = parse_forwards(list(args.port)) if args.port else None
+
+    # --pve (tri-state) + --vmid -> a PlatformProfile (or None = auto-detect).
+    platform, mid = _pve_to_platform(args.pve, args.vmid)
+
+    kind = VirtualMachine if mode == "vm" else SystemContainer
+    common = dict(
+        hostname=getattr(args, "hostname", None),
+        platform=platform,
+        mid=mid,
+        network=network,
+        forwards=forwards,
+        resources=resources or None,
+        environment=environment,
+        start=args.start,
+        nesting=args.allow_nesting,
+        extra_args=getattr(args, "pve_args", None) or (),
+        searchdomain=args.searchdomain,
+        timezone=args.timezone,
+        ssh_keys=args.ssh_keys,
+        ssh_key_user=args.ssh_key_user,
+        ssh_host_keys=args.ssh_host_keys,
+        ssh_host_key_dir=args.ssh_host_key_dir,
+        config_mode=args.config_mode,
+        force=args.force,
+    )
+    if mode == "vm":
+        kind.create(args.name, args.image,
+                    qemu_args=getattr(args, "qemu_args", None) or (),
+                    **common)
+    else:
+        kind.create(args.name, args.image,
+                    unprivileged=args.unprivileged,
+                    lxc_args=getattr(args, "lxc_args", None) or (), **common)
+
+
+def _build_create_network(net_type, bridge_name, ip, gateway, dns, mac):
+    """Build a ``NetworkConnection`` from the flat create flags (§5.1) or None.
+
+    Returns ``None`` when NO network-affecting flag was given, so the typed
+    create passes nothing and ``create.py`` AUTO-DETECTS (bridge for LXC,
+    usermode for plain VM) — preserving today's no-``--network`` behavior.
+    Otherwise maps the parsed ``net_type`` (``bridge``/``host``/``usermode``/
+    ``none`` or ``None``) + the L2/L3 flags onto the typed value:
+
+    * ``host``/``usermode``/``none`` -> the matching mode (no L3).
+    * ``bridge`` or (L3 flags with no ``--network``) -> STATIC if a static
+      ``--ip`` is present, else DHCP. A bare ``--ip``/``--gateway``/``--dns``
+      with no ``--network`` resolves to bridge networking (matching create.py's
+      auto-detect, which picks a bridge when L3 is requested); the typed create
+      then auto-detects the bridge NAME when none is given.
+    """
+    from kento import NetworkConnection, NetworkMode, parse_cidr
+
+    if net_type is None and ip is None and gateway is None and dns is None \
+            and mac is None:
+        return None
+
+    link_config: dict[str, str] = {}
+    if bridge_name:
+        link_config["bridge"] = bridge_name
+    if mac is not None:
+        link_config["mac"] = mac
+
+    if net_type == "host":
+        mode = NetworkMode.HOST
+    elif net_type == "usermode":
+        mode = NetworkMode.USER
+    elif net_type == "none":
+        mode = NetworkMode.DISABLED
+    else:
+        # "bridge", or L3 flags with no explicit --network -> bridge family.
+        ip_config: dict[str, str] = {}
+        if ip is not None:
+            address, subnet = parse_cidr(ip)
+            ip_config["address"] = address
+            if subnet is not None:
+                ip_config["subnet"] = subnet
+        if gateway is not None:
+            ip_config["gateway"] = gateway
+        if dns is not None:
+            ip_config["dns1"] = dns
+        mode = NetworkMode.STATIC if ip_config.get("address") else NetworkMode.DHCP
+        return NetworkConnection(
+            mode=mode, link_config=link_config, ip_config=ip_config)
+
+    return NetworkConnection(mode=mode, link_config=link_config)
+
+
+def _pve_to_platform(pve, vmid):
+    """Map ``--pve`` (tri-state) + ``--vmid`` onto ``(platform, mid)`` for the
+    typed create (§6, §11.4).
+
+    The typed create takes a ``platform`` (PVE intent) + a separate ``mid``
+    (vmid; ``None`` = auto-allocate). A ``PlatformProfile`` is an IDENTITY value,
+    so a ``PVE`` profile REQUIRES a concrete ``mid`` (>= 100, §6.2) — but at
+    CREATE time the vmid may be auto-allocated (``--vmid`` omitted -> 0). The
+    mapping:
+
+    * ``--no-pve`` (``pve is False``) -> ``(PlatformProfile(STANDARD), None)``
+      (force non-PVE).
+    * ``--pve --vmid N`` (N given)     -> ``(PlatformProfile(PVE, mid=N), None)``
+      (force PVE at a chosen vmid — the profile carries the id).
+    * ``--pve`` with auto-vmid         -> ``(PlatformProfile(PVE-intent), None)``
+      via the floor sentinel below — we CANNOT build a valid PVE identity
+      profile without a vmid, so the PVE force + auto-vmid rides ``platform=None``
+      + relies on PVE auto-detection.  **Disclosed nuance (Phase-6 re-point):**
+      ``--pve`` WITHOUT ``--vmid`` no longer hard-forces PVE independently of the
+      host — on a PVE host it behaves identically (auto-detect -> PVE); the only
+      lost case is forcing a PVE-specific error on a NON-PVE host when no vmid is
+      given (an edge that create's later mode checks still catch). Pass ``--vmid``
+      to force PVE explicitly.
+    * no flag (``pve is None``)        -> ``(None, mid)`` (auto-detect — today's
+      default).
+
+    Returns ``(platform, mid)`` where ``mid`` is the create ``mid`` param
+    (``None`` = auto-allocate).
+    """
+    from kento import PlatformMode, PlatformProfile
+
+    mid = vmid if vmid else None
+    if pve is False:
+        return PlatformProfile(mode=PlatformMode.STANDARD, mid=None,
+                               extra_args=()), mid
+    if pve is True and mid is not None:
+        # Force PVE at a chosen vmid: the profile carries the id (mid -> None to
+        # avoid the conflict guard; the profile.mid supplies the vmid).
+        return PlatformProfile(mode=PlatformMode.PVE, mid=mid,
+                               extra_args=()), None
+    # --pve with auto-vmid, or no --pve flag: auto-detect (platform=None). On a
+    # PVE host this yields PVE; mid (None) auto-allocates the vmid.
+    return None, mid
+
+
+def _env_list_to_map(env_list):
+    """Turn the CLI's ``--env KEY=VALUE`` list into the typed environment map.
+
+    ``create.py`` validates each entry (missing ``=`` / bad key / embedded
+    newline) — but the typed create takes a ``dict[str, str]``, so we split here
+    at the boundary. A malformed entry (no ``=``) is a clear ``ValidationError``
+    rather than a silent drop (§2 principle 5). ``None``/empty -> ``None``.
+    """
+    if not env_list:
+        return None
+    from kento.errors import ValidationError
+
+    env: dict[str, str] = {}
+    for entry in env_list:
+        key, sep, value = entry.partition("=")
+        if not sep or not key:
+            raise ValidationError(
+                f"invalid --env entry {entry!r}; expected KEY=VALUE."
+            )
+        env[key] = value
+    return env
 
 
 def _dispatch_multi(args, scope: str | None, subcmd: str) -> None:
@@ -992,15 +1157,250 @@ def _dispatch_attach(args, scope: str | None) -> None:
 
 
 def _dispatch_set(args, scope: str | None) -> None:
-    from kento import validate_name
+    """Re-pointed ``set`` onto M9 property mutation (§11.2, Phase 6).
+
+    The handle is resolved via the scope-aware ``get`` entry point, then for each
+    PROVIDED flag a read-modify-write is done on the matching TYPED property
+    (CLASSES-ONLY seam — no legacy ``set_cmd`` dict crosses the boundary):
+
+    * ``--memory``/``--cores`` -> RMW ``inst.resources`` (a ``dict[str, int]`` —
+      a spec'd open typed field, §11.0; only the keys passed are replaced).
+    * ``--hostname``           -> ``inst.hostname = ...``.
+    * ``--port``               -> ``inst.forwards = parse_forwards(specs)``
+      (declarative replace — Phase 5; ``--port ''`` clears to ``{}``).
+    * ``--lxc-arg``            -> ``inst.lxc_args`` (``SystemContainer`` only).
+    * ``--qemu-arg``           -> ``inst.qemu_args`` (``VirtualMachine`` only).
+    * ``--pve-arg``            -> ``inst.extra_args`` (PVE-only; the setter's
+      ``set_cmd`` enforces PVE validity).
+    * ``--network``/``--ip``/``--gateway``/``--dns``/``--mac`` -> RMW
+      ``inst.network`` (a whole ``NetworkConnection``; see ``_set_network_rmw``).
+
+    Only the fields the user passed are touched (unprovided ones are left). The
+    setters enforce per-field live-ness + catch-reverse INTERNALLY (§11.2 M9) —
+    the CLI just assigns; a raised ``KentoError`` (``StateError``/``ModeError``/
+    ``ValidationError``/``InstanceNotFoundError``) is mapped to today's exit by
+    the outer ``_handle`` wrapper. On success the dispatch returns and the
+    process exits 0 — preserving today's set contract (``set_cmd`` returned 0).
+
+    Kind-specific args (``--lxc-arg`` on a VM, ``--qemu-arg`` on an LXC) are
+    structurally absent on the wrong typed kind (no setter); we raise the SAME
+    ``ModeError`` message ``set_cmd`` used rather than letting a bare
+    ``AttributeError`` escape (which ``_handle`` would not catch).
+    """
+    from kento import (
+        SystemContainer,
+        VirtualMachine,
+        validate_name,
+    )
+    from kento.errors import ModeError
+
     validate_name(args.name)
-    from kento.set_cmd import set_cmd
-    sys.exit(set_cmd(args.name, memory=args.memory, cores=args.cores,
-                     mac=args.mac, qemu_args=args.qemu_args,
-                     pve_args=args.pve_args, lxc_args=args.lxc_args,
-                     network=args.network, ip=args.ip, gateway=args.gateway,
-                     dns=args.dns, hostname=args.hostname, port=args.port,
-                     namespace=scope))
+    inst = _resolve_instance(args.name, scope)
+
+    # --memory / --cores -> RMW the resources bag (only the provided keys).
+    if args.memory is not None or args.cores is not None:
+        resources = dict(inst.resources)
+        if args.memory is not None:
+            resources["memory"] = args.memory
+        if args.cores is not None:
+            resources["cores"] = args.cores
+        inst.resources = resources
+
+    # --hostname -> the hostname property (stopped-only; set_cmd persists).
+    if args.hostname is not None:
+        inst.hostname = args.hostname
+
+    # --lxc-arg -> SystemContainer.lxc_args (declarative replace; '' clears).
+    if args.lxc_args is not None:
+        if not isinstance(inst, SystemContainer):
+            raise ModeError(
+                "--lxc-arg is not applicable to VM modes (no native LXC config)."
+            )
+        inst.lxc_args = _set_list_arg(args.lxc_args)
+
+    # --qemu-arg -> VirtualMachine.qemu_args (declarative replace; '' clears).
+    if args.qemu_args is not None:
+        if not isinstance(inst, VirtualMachine):
+            raise ModeError(
+                "--qemu-arg is not supported for LXC/PVE-LXC instances; "
+                "it applies to VM modes only."
+            )
+        inst.qemu_args = _set_list_arg(args.qemu_args)
+
+    # --pve-arg -> the extra_args property (PVE-only; setter's set_cmd guards).
+    if args.pve_args is not None:
+        inst.extra_args = _set_list_arg(args.pve_args)
+
+    # --port -> the forwards map (declarative replace; '' clears to {}).
+    if args.port is not None:
+        from kento import parse_forwards
+        specs = [p for p in args.port if p != ""]
+        inst.forwards = parse_forwards(specs)
+
+    # --network / --ip / --gateway / --dns / --mac -> RMW the NetworkConnection.
+    if (args.network is not None or args.ip is not None
+            or args.gateway is not None or args.dns is not None
+            or args.mac is not None):
+        _set_network_rmw(inst, args)
+
+
+def _set_list_arg(values: "list[str]") -> "list[str]":
+    """Map the CLI's append-list clear sentinel onto the typed setter's clear.
+
+    The pass-through setters (``lxc_args``/``qemu_args``/``extra_args``) take a
+    WHOLE list: a non-empty list REPLACES, an empty list CLEARS. The CLI's
+    ``--lxc-arg ''`` clear sentinel arrives as ``['']`` (an all-empty list), so
+    strip the empty strings -> ``[]`` clears, ``['x', 'y']`` replaces verbatim.
+    """
+    return [v for v in values if v != ""]
+
+
+def _set_network_rmw(inst, args) -> None:
+    """RMW the typed ``NetworkConnection`` from the granular set flags (§5.1, M9).
+
+    The CLI's ``--network``/``--ip``/``--gateway``/``--dns``/``--mac`` are
+    granular partial edits, but the typed ``network`` property takes a WHOLE
+    ``NetworkConnection`` (M9: assign a whole typed value, sub-edits via
+    read-modify-write). So we read ``inst.network``, overlay only the provided
+    flags using the SAME merge rules ``set_cmd`` applies on-disk (a network-type
+    change resets the bridge / clears L3 for non-bridge modes; ``--ip dhcp``
+    clears the static address + gateway; etc.), and assign the result. The typed
+    setter then re-decomposes the whole value back through ``set_cmd`` (with
+    explicit clears) — stopped-only, lock-guarded, catch-reverse internally.
+
+    Mode/identity validity (e.g. usermode is VM-only, ``--ip`` needs bridge) is
+    enforced by ``set_cmd`` inside the setter, so an invalid combination raises
+    the same typed ``ModeError``/``ValidationError`` as today BEFORE any write.
+    """
+    from kento import NetworkConnection, NetworkMode
+    from kento.errors import ValidationError
+
+    current = inst.network
+    link = dict(current.link_config)
+    ip_config = dict(current.ip_config)
+
+    # Track the network TYPE-FAMILY separately from the static-address presence,
+    # exactly as set_cmd does (set_cmd.py:_resolve_net_identity / merge): the
+    # type is "bridge"/"host"/"usermode"/"none", and STATIC-vs-DHCP is decided
+    # by whether a static address is present. This separation is what lets us
+    # faithfully reproduce set_cmd's identity validation (e.g. `--ip` on a
+    # non-bridge type is an ERROR, not silently coerced to STATIC).
+    net_type = {
+        NetworkMode.STATIC: "bridge",
+        NetworkMode.DHCP: "bridge",
+        NetworkMode.HOST: "host",
+        NetworkMode.USER: "usermode",
+        NetworkMode.DISABLED: "none",
+    }[current.mode]
+
+    # --network: change the type (and reset the bridge unless one is named),
+    # mirroring set_cmd's identity merge (set_cmd.py:529-539).
+    if args.network is not None:
+        req_type, req_bridge = _parse_network_for_set(args.network)
+        net_type = req_type
+        if req_type == "bridge":
+            if req_bridge is not None:
+                link["bridge"] = req_bridge
+            # else keep the current bridge.
+        else:
+            # A non-bridge type drops the bridge + any static L3 (set_cmd resets
+            # bridge to None; the non-bridge modes carry no ip_config, §5.2).
+            link.pop("bridge", None)
+            ip_config.pop("address", None)
+            ip_config.pop("subnet", None)
+            ip_config.pop("gateway", None)
+            ip_config.pop("dns1", None)
+
+    # --ip: 'dhcp' clears the static address (+ gateway); else set a static
+    # address. --ip does NOT change the type-family (set_cmd.py:541-546); an
+    # --ip on a non-bridge type is caught by the identity guard below.
+    if args.ip is not None:
+        if args.ip == "dhcp":
+            ip_config.pop("address", None)
+            ip_config.pop("subnet", None)
+            ip_config.pop("gateway", None)  # gateway is meaningless w/o static
+        else:
+            from kento import parse_cidr
+            address, subnet = parse_cidr(args.ip)
+            ip_config["address"] = address
+            if subnet is not None:
+                ip_config["subnet"] = subnet
+            else:
+                ip_config.pop("subnet", None)
+
+    # --gateway / --dns: L3 fields ('' clears; set_cmd.py:547-550).
+    if args.gateway is not None:
+        if args.gateway:
+            ip_config["gateway"] = args.gateway
+        else:
+            ip_config.pop("gateway", None)
+    if args.dns is not None:
+        if args.dns:
+            ip_config["dns1"] = args.dns
+        else:
+            ip_config.pop("dns1", None)
+
+    # --mac: an L2 NIC attribute (link_config); VM-only validity is enforced by
+    # set_cmd inside the setter (raises ModeError on an LXC instance).
+    if args.mac is not None:
+        link["mac"] = args.mac
+
+    # Identity guards mirroring set_cmd._validate_net_identity (set_cmd.py:361-
+    # 369) for the rules the typed decomposition cannot reproduce on its own
+    # (gate C — preserve today's errors; no silent data loss). Mode-family ×
+    # backend validity (usermode VM-only, host LXC-only, etc.) IS reproduced by
+    # the typed setter's set_cmd, so it is not re-checked here.
+    has_static = bool(ip_config.get("address"))
+    if args.ip is not None and args.ip != "dhcp" and net_type != "bridge":
+        raise ValidationError(
+            "--ip requires bridge networking (--network bridge=<name>); "
+            f"the resulting network type is {net_type!r}."
+        )
+    if args.gateway is not None and args.gateway and not has_static:
+        raise ValidationError(
+            "--gateway requires a static --ip (a gateway has no meaning "
+            "without a static address)."
+        )
+
+    # Map the resolved (type-family, static-presence) back to the typed mode.
+    if net_type == "bridge":
+        mode = NetworkMode.STATIC if has_static else NetworkMode.DHCP
+    else:
+        mode = {
+            "host": NetworkMode.HOST,
+            "usermode": NetworkMode.USER,
+            "none": NetworkMode.DISABLED,
+        }[net_type]
+
+    inst.network = NetworkConnection(
+        mode=mode, link_config=link, ip_config=ip_config,
+    )
+
+
+def _parse_network_for_set(network: str) -> "tuple[str, str | None]":
+    """Parse a ``set --network`` value into ``(net_type, bridge_name)``.
+
+    Accepts the same surface as ``create``'s ``--network``: ``bridge``,
+    ``bridge=<name>``, ``host``, ``usermode``, ``none``. Mode-vs-type validity is
+    enforced later by the typed setter's ``set_cmd`` against the resolved
+    instance (so the message reflects the actual instance). Mirrors
+    ``set_cmd._parse_network_arg``.
+    """
+    from kento.errors import ValidationError
+
+    if network in ("host", "usermode", "none", "bridge"):
+        return network, None
+    if network.startswith("bridge="):
+        name = network.split("=", 1)[1]
+        if not name:
+            raise ValidationError(
+                "--network bridge=<name> requires a bridge name."
+            )
+        return "bridge", name
+    raise ValidationError(
+        f"unknown --network value {network!r}; expected one of "
+        "bridge, bridge=<name>, host, usermode, none."
+    )
 
 
 def _resolve_vm(name: str, scope: str | None):

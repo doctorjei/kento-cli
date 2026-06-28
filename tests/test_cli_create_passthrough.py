@@ -10,6 +10,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from kento_cli import main
+from test_cli import _run_create
 
 
 # ---------- Argparse / CLI-level tests ----------
@@ -25,23 +26,20 @@ class TestQemuArgCli:
         assert "--qemu-arg" in capsys.readouterr().out
 
     def test_qemu_arg_passes_through_on_vm(self):
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create):
-            main(["vm", "create",
-                  "--qemu-arg", "-device virtio-rng-pci",
-                  "--qemu-arg", "-smbios type=1,serial=abc",
-                  "debian:12"])
-        mock_create.assert_called_once()
-        assert mock_create.call_args[1]["qemu_args"] == [
+        call = _run_create([
+            "vm", "create",
+            "--qemu-arg", "-device virtio-rng-pci",
+            "--qemu-arg", "-smbios type=1,serial=abc",
+            "debian:12"])
+        assert list(call.kwargs["qemu_args"]) == [
             "-device virtio-rng-pci",
             "-smbios type=1,serial=abc",
         ]
 
     def test_qemu_arg_default_none_on_vm(self):
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create):
-            main(["vm", "create", "debian:12"])
-        assert mock_create.call_args[1]["qemu_args"] is None
+        # No --qemu-arg -> the typed create's default empty tuple (no pass-through).
+        call = _run_create(["vm", "create", "debian:12"])
+        assert tuple(call.kwargs["qemu_args"]) == ()
 
     def test_qemu_arg_rejected_on_lxc_create(self, capsys):
         with pytest.raises(SystemExit) as exc:
@@ -69,24 +67,21 @@ class TestLxcArgCli:
         assert "--lxc-arg" in capsys.readouterr().out
 
     def test_lxc_arg_passes_through_on_plain_lxc(self):
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create), \
-             patch("kento.pve.is_pve", return_value=False):
-            main(["lxc", "create",
-                  "--lxc-arg", "lxc.cgroup2.devices.allow = c 10:200 rwm",
-                  "--lxc-arg", "lxc.cap.drop = sys_module",
-                  "debian:12"])
-        assert mock_create.call_args[1]["lxc_args"] == [
+        with patch("kento.pve.is_pve", return_value=False):
+            call = _run_create([
+                "lxc", "create",
+                "--lxc-arg", "lxc.cgroup2.devices.allow = c 10:200 rwm",
+                "--lxc-arg", "lxc.cap.drop = sys_module",
+                "debian:12"])
+        assert list(call.kwargs["lxc_args"]) == [
             "lxc.cgroup2.devices.allow = c 10:200 rwm",
             "lxc.cap.drop = sys_module",
         ]
 
     def test_lxc_arg_default_none(self):
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create), \
-             patch("kento.pve.is_pve", return_value=False):
-            main(["lxc", "create", "debian:12"])
-        assert mock_create.call_args[1]["lxc_args"] is None
+        with patch("kento.pve.is_pve", return_value=False):
+            call = _run_create(["lxc", "create", "debian:12"])
+        assert tuple(call.kwargs["lxc_args"]) == ()
 
     def test_lxc_arg_rejected_on_vm_scope(self, capsys):
         with pytest.raises(SystemExit) as exc:
@@ -133,23 +128,22 @@ class TestPveArgCli:
         assert "--pve-arg" in capsys.readouterr().out
 
     def test_pve_arg_on_pve_lxc_passes_through(self):
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create), \
-             patch("kento.pve.is_pve", return_value=True):
-            main(["lxc", "create",
-                  "--pve", "--pve-arg", "tags: kento-test",
-                  "--pve-arg", "onboot: 1",
-                  "debian:12"])
-        assert mock_create.call_args[1]["pve_args"] == [
+        # --pve-arg rides the typed `extra_args` param (the platform pass-through).
+        with patch("kento.pve.is_pve", return_value=True):
+            call = _run_create([
+                "lxc", "create",
+                "--pve", "--pve-arg", "tags: kento-test",
+                "--pve-arg", "onboot: 1",
+                "debian:12"])
+        assert list(call.kwargs["extra_args"]) == [
             "tags: kento-test", "onboot: 1"]
 
     def test_pve_arg_on_pve_vm_passes_through(self):
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create), \
-             patch("kento.pve.is_pve", return_value=True):
-            main(["vm", "create", "--pve",
-                  "--pve-arg", "tags: kento-test", "debian:12"])
-        assert mock_create.call_args[1]["pve_args"] == ["tags: kento-test"]
+        with patch("kento.pve.is_pve", return_value=True):
+            call = _run_create([
+                "vm", "create", "--pve",
+                "--pve-arg", "tags: kento-test", "debian:12"])
+        assert list(call.kwargs["extra_args"]) == ["tags: kento-test"]
 
     def test_pve_arg_on_plain_lxc_rejected(self, capsys):
         """--pve-arg on plain LXC (is_pve() False, auto-detect) errors with

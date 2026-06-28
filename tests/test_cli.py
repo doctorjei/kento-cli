@@ -9,6 +9,121 @@ from kento_cli import main, _parse_network
 from kento_cli import _projection  # noqa: F401  (register cli._projection)
 
 
+def _make_fake_set_instance(network, *, vm=False):
+    """Build a recording fake handle for the re-pointed `set` dispatcher.
+
+    The Phase-6 `_dispatch_set` resolves a typed handle then RMWs M9 properties
+    on it. These fakes subclass the REAL kind (so `isinstance(inst,
+    SystemContainer/VirtualMachine)` in the handler holds) but OVERRIDE the
+    settable properties with plain recording slots — no live I/O, no `set_cmd`.
+    They record the TYPED objects assigned (classes-only seam) for the tests to
+    assert against.
+    """
+    from kento import SystemContainer, VirtualMachine
+
+    base = VirtualMachine if vm else SystemContainer
+
+    class _Fake(base):  # type: ignore[valid-type, misc]
+        def __init__(self, net):
+            self._network = net
+            self._resources = {}
+            self._hostname = "box"
+            self._forwards = {}
+            self._lxc_args = ()
+            self._qemu_args = ()
+            self._extra_args = ()
+            self.network_set_count = 0
+            self.forwards_set_count = 0
+
+        @property
+        def network(self):
+            return self._network
+
+        @network.setter
+        def network(self, value):
+            self._network = value
+            self.network_set_count += 1
+
+        @property
+        def resources(self):
+            return self._resources
+
+        @resources.setter
+        def resources(self, value):
+            self._resources = value
+
+        @property
+        def hostname(self):
+            return self._hostname
+
+        @hostname.setter
+        def hostname(self, value):
+            self._hostname = value
+
+        @property
+        def forwards(self):
+            return self._forwards
+
+        @forwards.setter
+        def forwards(self, value):
+            self._forwards = value
+            self.forwards_set_count += 1
+
+        @property
+        def lxc_args(self):
+            return self._lxc_args
+
+        @lxc_args.setter
+        def lxc_args(self, value):
+            self._lxc_args = tuple(value)
+
+        @property
+        def qemu_args(self):
+            return self._qemu_args
+
+        @qemu_args.setter
+        def qemu_args(self, value):
+            self._qemu_args = tuple(value)
+
+        @property
+        def extra_args(self):
+            return self._extra_args
+
+        @extra_args.setter
+        def extra_args(self, value):
+            self._extra_args = tuple(value)
+
+    return _Fake(network)
+
+
+def _FakeSetInstance(network):
+    """A recording SystemContainer-kind fake (LXC) for `set` dispatch tests."""
+    return _make_fake_set_instance(network, vm=False)
+
+
+def _FakeSetVM(network):
+    """A recording VirtualMachine-kind fake for `set` dispatch tests."""
+    return _make_fake_set_instance(network, vm=True)
+
+
+def _run_create(argv):
+    """Run a create/run command with BOTH typed creates patched; return the
+    captured ``call`` (positional + kwargs) of whichever kind fired.
+
+    Phase-6 re-point: `create`/`run` now dispatch onto the typed
+    `SystemContainer.create` / `VirtualMachine.create`, so create tests assert
+    the TYPED objects built (classes-only seam) instead of flat `create.create`
+    kwargs. Returns the MagicMock `call` object (use `.args` / `.kwargs`).
+    """
+    with patch("kento.SystemContainer.create") as msc, \
+         patch("kento.VirtualMachine.create") as mvm:
+        main(argv)
+    if msc.called:
+        return msc.call_args
+    assert mvm.called, "neither typed create was called"
+    return mvm.call_args
+
+
 def test_help(capsys):
     with pytest.raises(SystemExit) as exc:
         main(["--help"])
@@ -396,24 +511,20 @@ class TestAllowNestingFlag:
     """--allow-nesting unified flag (default off in all modes)."""
 
     def test_default_off(self):
-        with patch("kento.create.create") as mock_create:
-            main(["vm", "create", "myimg"])
-        assert mock_create.call_args.kwargs["nesting"] is False
+        call = _run_create(["vm", "create", "myimg"])
+        assert call.kwargs["nesting"] is False
 
     def test_allow_nesting_on(self):
-        with patch("kento.create.create") as mock_create:
-            main(["vm", "create", "--allow-nesting", "myimg"])
-        assert mock_create.call_args.kwargs["nesting"] is True
+        call = _run_create(["vm", "create", "--allow-nesting", "myimg"])
+        assert call.kwargs["nesting"] is True
 
     def test_no_allow_nesting(self):
-        with patch("kento.create.create") as mock_create:
-            main(["vm", "create", "--no-allow-nesting", "myimg"])
-        assert mock_create.call_args.kwargs["nesting"] is False
+        call = _run_create(["vm", "create", "--no-allow-nesting", "myimg"])
+        assert call.kwargs["nesting"] is False
 
     def test_lxc_allow_nesting_on(self):
-        with patch("kento.create.create") as mock_create:
-            main(["lxc", "create", "--allow-nesting", "myimg"])
-        assert mock_create.call_args.kwargs["nesting"] is True
+        call = _run_create(["lxc", "create", "--allow-nesting", "myimg"])
+        assert call.kwargs["nesting"] is True
 
     def test_old_nesting_flag_removed(self, capsys):
         # The old --nesting flag no longer exists.
@@ -428,14 +539,12 @@ class TestUnprivilegedFlag:
     """--unprivileged flag is parsed and threaded to create()."""
 
     def test_default_off(self):
-        with patch("kento.create.create") as mock_create:
-            main(["lxc", "create", "myimg"])
-        assert mock_create.call_args.kwargs["unprivileged"] is False
+        call = _run_create(["lxc", "create", "myimg"])
+        assert call.kwargs["unprivileged"] is False
 
     def test_unprivileged_on(self):
-        with patch("kento.create.create") as mock_create:
-            main(["lxc", "create", "--unprivileged", "myimg"])
-        assert mock_create.call_args.kwargs["unprivileged"] is True
+        call = _run_create(["lxc", "create", "--unprivileged", "myimg"])
+        assert call.kwargs["unprivileged"] is True
 
 
 class TestTopLevelHelp:
@@ -932,34 +1041,30 @@ class TestRunCommand:
         assert exc.value.code != 0
 
     def test_lxc_run_dispatches_create_with_start_true(self):
-        """kento lxc run debian:12 dispatches to create with start=True and mode=lxc."""
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create):
+        """kento lxc run debian:12 dispatches to SystemContainer.create, start=True."""
+        with patch("kento.SystemContainer.create") as msc, \
+             patch("kento.VirtualMachine.create") as mvm:
             main(["lxc", "run", "debian:12"])
-        mock_create.assert_called_once()
-        call_kwargs = mock_create.call_args
-        assert call_kwargs[1]["start"] is True
-        assert call_kwargs[1]["mode"] == "lxc"
+        msc.assert_called_once()
+        assert not mvm.called  # the LXC kind, not the VM kind
+        assert msc.call_args.kwargs["start"] is True
+        # The image is the 2nd positional (name, image); name is None (auto).
+        assert msc.call_args.args == (None, "debian:12")
 
     def test_lxc_run_with_name_flag(self):
-        """kento lxc run --name mybox debian:12 passes name through."""
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create):
-            main(["lxc", "run", "--name", "mybox", "debian:12"])
-        mock_create.assert_called_once()
-        call_kwargs = mock_create.call_args
-        assert call_kwargs[1]["name"] == "mybox"
-        assert call_kwargs[1]["start"] is True
+        """kento lxc run --name mybox debian:12 passes name through (positional)."""
+        call = _run_create(["lxc", "run", "--name", "mybox", "debian:12"])
+        assert call.args == ("mybox", "debian:12")
+        assert call.kwargs["start"] is True
 
     def test_vm_run_forces_vm_mode(self):
-        """kento vm run debian:12 forces VM mode."""
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create):
+        """kento vm run debian:12 forces the VM kind (VirtualMachine.create)."""
+        with patch("kento.SystemContainer.create") as msc, \
+             patch("kento.VirtualMachine.create") as mvm:
             main(["vm", "run", "debian:12"])
-        mock_create.assert_called_once()
-        call_kwargs = mock_create.call_args
-        assert call_kwargs[1]["mode"] == "vm"
-        assert call_kwargs[1]["start"] is True
+        mvm.assert_called_once()
+        assert not msc.called
+        assert mvm.call_args.kwargs["start"] is True
 
     def test_run_in_lxc_help(self, capsys):
         """run appears in lxc help output."""
@@ -1018,43 +1123,29 @@ class TestSSHKeyFlag:
 
     def test_ssh_key_repeatable(self):
         """--ssh-key PATH can be given multiple times and produces a list."""
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create):
-            main(["lxc", "create",
-                  "--ssh-key", "/tmp/key1.pub",
-                  "--ssh-key", "/tmp/key2.pub",
-                  "debian:12"])
-        mock_create.assert_called_once()
-        call_kwargs = mock_create.call_args[1]
-        assert call_kwargs["ssh_keys"] == ["/tmp/key1.pub", "/tmp/key2.pub"]
+        call = _run_create(["lxc", "create",
+                            "--ssh-key", "/tmp/key1.pub",
+                            "--ssh-key", "/tmp/key2.pub",
+                            "debian:12"])
+        assert call.kwargs["ssh_keys"] == ["/tmp/key1.pub", "/tmp/key2.pub"]
 
     def test_ssh_key_passes_through_to_create(self):
-        """--ssh-key PATH reaches create() as ssh_keys=[...]."""
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create):
-            main(["lxc", "create", "--ssh-key", "/tmp/mykey.pub", "debian:12"])
-        mock_create.assert_called_once()
-        call_kwargs = mock_create.call_args[1]
-        assert call_kwargs["ssh_keys"] == ["/tmp/mykey.pub"]
+        """--ssh-key PATH reaches the typed create as ssh_keys=[...]."""
+        call = _run_create(
+            ["lxc", "create", "--ssh-key", "/tmp/mykey.pub", "debian:12"])
+        assert call.kwargs["ssh_keys"] == ["/tmp/mykey.pub"]
 
     def test_ssh_key_default_none(self):
         """Without --ssh-key, ssh_keys is None."""
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create):
-            main(["lxc", "create", "debian:12"])
-        mock_create.assert_called_once()
-        call_kwargs = mock_create.call_args[1]
-        assert call_kwargs["ssh_keys"] is None
+        call = _run_create(["lxc", "create", "debian:12"])
+        assert call.kwargs["ssh_keys"] is None
 
     def test_ssh_key_passes_through_from_run(self):
-        """--ssh-key reaches create() when used via run."""
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create):
-            main(["lxc", "run", "--ssh-key", "/tmp/mykey.pub", "debian:12"])
-        mock_create.assert_called_once()
-        call_kwargs = mock_create.call_args[1]
-        assert call_kwargs["ssh_keys"] == ["/tmp/mykey.pub"]
-        assert call_kwargs["start"] is True
+        """--ssh-key reaches the typed create when used via run."""
+        call = _run_create(
+            ["lxc", "run", "--ssh-key", "/tmp/mykey.pub", "debian:12"])
+        assert call.kwargs["ssh_keys"] == ["/tmp/mykey.pub"]
+        assert call.kwargs["start"] is True
 
 
 class TestSSHKeyUserFlag:
@@ -1078,41 +1169,28 @@ class TestSSHKeyUserFlag:
 
     def test_ssh_key_user_default_root(self):
         """Without --ssh-key-user, ssh_key_user defaults to 'root'."""
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create):
-            main(["lxc", "create", "debian:12"])
-        mock_create.assert_called_once()
-        call_kwargs = mock_create.call_args[1]
-        assert call_kwargs["ssh_key_user"] == "root"
+        call = _run_create(["lxc", "create", "debian:12"])
+        assert call.kwargs["ssh_key_user"] == "root"
 
     def test_ssh_key_user_custom_value(self):
-        """--ssh-key-user droste passes through to create()."""
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create):
-            main(["lxc", "create", "--ssh-key-user", "droste", "debian:12"])
-        mock_create.assert_called_once()
-        call_kwargs = mock_create.call_args[1]
-        assert call_kwargs["ssh_key_user"] == "droste"
+        """--ssh-key-user droste passes through to the typed create."""
+        call = _run_create(
+            ["lxc", "create", "--ssh-key-user", "droste", "debian:12"])
+        assert call.kwargs["ssh_key_user"] == "droste"
 
     def test_ssh_key_user_passes_through_from_run(self):
-        """--ssh-key-user reaches create() when used via run."""
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create):
-            main(["lxc", "run", "--ssh-key-user", "droste", "debian:12"])
-        mock_create.assert_called_once()
-        call_kwargs = mock_create.call_args[1]
-        assert call_kwargs["ssh_key_user"] == "droste"
-        assert call_kwargs["start"] is True
+        """--ssh-key-user reaches the typed create when used via run."""
+        call = _run_create(
+            ["lxc", "run", "--ssh-key-user", "droste", "debian:12"])
+        assert call.kwargs["ssh_key_user"] == "droste"
+        assert call.kwargs["start"] is True
 
     def test_ssh_key_user_without_ssh_key_is_harmless(self):
         """--ssh-key-user without --ssh-key doesn't error."""
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create):
-            main(["lxc", "create", "--ssh-key-user", "droste", "debian:12"])
-        mock_create.assert_called_once()
-        call_kwargs = mock_create.call_args[1]
-        assert call_kwargs["ssh_keys"] is None
-        assert call_kwargs["ssh_key_user"] == "droste"
+        call = _run_create(
+            ["lxc", "create", "--ssh-key-user", "droste", "debian:12"])
+        assert call.kwargs["ssh_keys"] is None
+        assert call.kwargs["ssh_key_user"] == "droste"
 
 
 class TestSSHHostKeyFlags:
@@ -1158,53 +1236,35 @@ class TestSSHHostKeyFlags:
         assert exc.value.code != 0
 
     def test_ssh_host_keys_passes_through(self):
-        """--ssh-host-keys reaches create() as ssh_host_keys=True."""
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create):
-            main(["lxc", "create", "--ssh-host-keys", "debian:12"])
-        mock_create.assert_called_once()
-        call_kwargs = mock_create.call_args[1]
-        assert call_kwargs["ssh_host_keys"] is True
-        assert call_kwargs["ssh_host_key_dir"] is None
+        """--ssh-host-keys reaches the typed create as ssh_host_keys=True."""
+        call = _run_create(["lxc", "create", "--ssh-host-keys", "debian:12"])
+        assert call.kwargs["ssh_host_keys"] is True
+        assert call.kwargs["ssh_host_key_dir"] is None
 
     def test_ssh_host_key_dir_passes_through(self):
-        """--ssh-host-key-dir PATH reaches create() as ssh_host_key_dir=PATH."""
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create):
-            main(["lxc", "create", "--ssh-host-key-dir", "/tmp/mykeys", "debian:12"])
-        mock_create.assert_called_once()
-        call_kwargs = mock_create.call_args[1]
-        assert call_kwargs["ssh_host_key_dir"] == "/tmp/mykeys"
-        assert call_kwargs["ssh_host_keys"] is False
+        """--ssh-host-key-dir PATH reaches the typed create."""
+        call = _run_create(
+            ["lxc", "create", "--ssh-host-key-dir", "/tmp/mykeys", "debian:12"])
+        assert call.kwargs["ssh_host_key_dir"] == "/tmp/mykeys"
+        assert call.kwargs["ssh_host_keys"] is False
 
     def test_ssh_host_keys_default_false(self):
         """Without --ssh-host-keys, ssh_host_keys is False."""
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create):
-            main(["lxc", "create", "debian:12"])
-        mock_create.assert_called_once()
-        call_kwargs = mock_create.call_args[1]
-        assert call_kwargs["ssh_host_keys"] is False
-        assert call_kwargs["ssh_host_key_dir"] is None
+        call = _run_create(["lxc", "create", "debian:12"])
+        assert call.kwargs["ssh_host_keys"] is False
+        assert call.kwargs["ssh_host_key_dir"] is None
 
     def test_ssh_host_keys_via_run(self):
-        """--ssh-host-keys reaches create() when used via run."""
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create):
-            main(["lxc", "run", "--ssh-host-keys", "debian:12"])
-        mock_create.assert_called_once()
-        call_kwargs = mock_create.call_args[1]
-        assert call_kwargs["ssh_host_keys"] is True
-        assert call_kwargs["start"] is True
+        """--ssh-host-keys reaches the typed create when used via run."""
+        call = _run_create(["lxc", "run", "--ssh-host-keys", "debian:12"])
+        assert call.kwargs["ssh_host_keys"] is True
+        assert call.kwargs["start"] is True
 
     def test_ssh_host_key_dir_via_vm_create(self):
-        """--ssh-host-key-dir reaches create() via vm create."""
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create):
-            main(["vm", "create", "--ssh-host-key-dir", "/tmp/k", "debian:12"])
-        mock_create.assert_called_once()
-        call_kwargs = mock_create.call_args[1]
-        assert call_kwargs["ssh_host_key_dir"] == "/tmp/k"
+        """--ssh-host-key-dir reaches the typed create via vm create."""
+        call = _run_create(
+            ["vm", "create", "--ssh-host-key-dir", "/tmp/k", "debian:12"])
+        assert call.kwargs["ssh_host_key_dir"] == "/tmp/k"
 
 
 class TestMacFlag:
@@ -1235,13 +1295,10 @@ class TestMacFlag:
         assert "--mac" in output
 
     def test_mac_valid_passes_through(self):
-        """A valid --mac value reaches create() unchanged (VM scope)."""
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create):
-            main(["vm", "create", "--mac", "52:54:00:ab:cd:ef", "debian:12"])
-        mock_create.assert_called_once()
-        call_kwargs = mock_create.call_args[1]
-        assert call_kwargs["mac"] == "52:54:00:ab:cd:ef"
+        """A valid --mac builds the NetworkConnection's link_config (VM scope)."""
+        call = _run_create(
+            ["vm", "create", "--mac", "52:54:00:ab:cd:ef", "debian:12"])
+        assert call.kwargs["network"].link_config["mac"] == "52:54:00:ab:cd:ef"
 
     def test_mac_rejected_on_lxc_scope(self, capsys):
         """F9: --mac on LXC scope is rejected (silently ignored before)."""
@@ -1260,13 +1317,9 @@ class TestMacFlag:
         assert "--mac is not supported for LXC" in err
 
     def test_mac_default_none(self):
-        """Without --mac, mac is None (auto-generate in create)."""
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create):
-            main(["lxc", "create", "debian:12"])
-        mock_create.assert_called_once()
-        call_kwargs = mock_create.call_args[1]
-        assert call_kwargs["mac"] is None
+        """Without --mac (and no other net flag), network is None (auto)."""
+        call = _run_create(["lxc", "create", "debian:12"])
+        assert call.kwargs["network"] is None
 
     def test_mac_invalid_format_rejected(self, capsys):
         """An invalid --mac value is rejected with an argparse error."""
@@ -1290,20 +1343,16 @@ class TestMacFlag:
 
     def test_mac_accepts_uppercase(self):
         """Uppercase hex accepted (VM scope)."""
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create):
-            main(["vm", "create", "--mac", "AA:BB:CC:DD:EE:FF", "debian:12"])
-        mock_create.assert_called_once()
-        assert mock_create.call_args[1]["mac"] == "AA:BB:CC:DD:EE:FF"
+        call = _run_create(
+            ["vm", "create", "--mac", "AA:BB:CC:DD:EE:FF", "debian:12"])
+        assert call.kwargs["network"].link_config["mac"] == "AA:BB:CC:DD:EE:FF"
 
     def test_mac_reaches_create_via_run(self):
-        """--mac via 'vm run' also reaches create()."""
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create):
-            main(["vm", "run", "--mac", "52:54:00:11:22:33", "debian:12"])
-        mock_create.assert_called_once()
-        assert mock_create.call_args[1]["mac"] == "52:54:00:11:22:33"
-        assert mock_create.call_args[1]["start"] is True
+        """--mac via 'vm run' also reaches the typed create."""
+        call = _run_create(
+            ["vm", "run", "--mac", "52:54:00:11:22:33", "debian:12"])
+        assert call.kwargs["network"].link_config["mac"] == "52:54:00:11:22:33"
+        assert call.kwargs["start"] is True
 
     def test_mac_multicast_rejected(self, capsys):
         """F16: multicast MACs (first-octet LSB set) are rejected."""
@@ -1330,18 +1379,15 @@ class TestMacFlag:
 
     def test_mac_laa_accepted(self):
         """F16 counter-test: locally-administered unicast (0x02 prefix) is fine."""
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create):
-            main(["vm", "create", "--mac", "02:aa:bb:cc:dd:ee", "debian:12"])
-        mock_create.assert_called_once()
-        assert mock_create.call_args[1]["mac"] == "02:aa:bb:cc:dd:ee"
+        call = _run_create(
+            ["vm", "create", "--mac", "02:aa:bb:cc:dd:ee", "debian:12"])
+        assert call.kwargs["network"].link_config["mac"] == "02:aa:bb:cc:dd:ee"
 
     def test_mac_06_prefix_accepted(self):
         """F16 counter-test: 0x06 (LAA unicast) is fine."""
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create):
-            main(["vm", "create", "--mac", "06:00:00:00:00:01", "debian:12"])
-        mock_create.assert_called_once()
+        call = _run_create(
+            ["vm", "create", "--mac", "06:00:00:00:00:01", "debian:12"])
+        assert call.kwargs["network"].link_config["mac"] == "06:00:00:00:00:01"
 
     def test_set_mac_multicast_rejected_at_parse_time(self, capsys):
         """`set --mac` shares create's _validate_mac, so a multicast MAC is
@@ -1353,67 +1399,214 @@ class TestMacFlag:
         assert "multicast" in err.lower() or "broadcast" in err.lower()
 
     def test_set_mac_unicast_accepted_at_parse_time(self):
-        """Counter-test: a unicast MAC passes parse-time validation for set
-        (it then dispatches into set_cmd, which we stub)."""
-        with patch("kento.set_cmd.set_cmd", MagicMock(return_value=0)) as m, \
-             pytest.raises(SystemExit) as exc:
+        """Counter-test: a unicast MAC passes parse-time validation for set; it
+        then RMWs the typed NetworkConnection (mac is an L2 link_config attr)."""
+        from kento import NetworkConnection, NetworkMode
+        # mac is VM-only at the runtime level; use a VM-kind fake in USER mode.
+        fake = _FakeSetVM(NetworkConnection(mode=NetworkMode.USER))
+        with patch("kento_cli._resolve_instance", return_value=fake):
             main(["set", "box", "--mac", "52:54:00:11:22:33"])
-        assert exc.value.code == 0
-        m.assert_called_once()
-        assert m.call_args[1]["mac"] == "52:54:00:11:22:33"
+        assert fake.network.link_config["mac"] == "52:54:00:11:22:33"
 
 
 class TestSetNetworkFlags:
-    """`kento set` network flags thread through to set_cmd (v1.6.0)."""
+    """`kento set` re-pointed onto M9 property mutation (§11.2, Phase 6).
 
-    def _run_set(self, argv):
-        with patch("kento.set_cmd.set_cmd",
-                   MagicMock(return_value=0)) as m, \
-             pytest.raises(SystemExit) as exc:
+    The handler now RMWs TYPED properties on the resolved handle instead of
+    calling ``set_cmd`` with flat kwargs; these tests mock the resolved instance
+    (``_FakeSetInstance``) and assert the TYPED objects assigned (CLASSES-ONLY).
+    """
+
+    def _run_set(self, argv, *, fake=None):
+        from kento import NetworkConnection, NetworkMode
+        if fake is None:
+            fake = _FakeSetInstance(NetworkConnection(mode=NetworkMode.DHCP))
+        with patch("kento_cli._resolve_instance", return_value=fake):
+            # The re-pointed `set` returns on success (no sys.exit(0)) — the
+            # outer _handle only converts a raised KentoError into an exit code,
+            # matching the other Phase-6 dispatchers (info/attach/...).
             main(argv)
-        assert exc.value.code == 0
-        m.assert_called_once()
-        return m.call_args[1]
+        return fake
 
-    def test_set_network_threads_through(self):
-        kw = self._run_set(["lxc", "set", "box", "--network", "host"])
-        assert kw["network"] == "host"
-        assert kw["namespace"] == "lxc"
+    def test_set_network_host_builds_disabled_l3_cleared(self):
+        from kento import NetworkConnection, NetworkMode
+        start = NetworkConnection(
+            mode=NetworkMode.STATIC,
+            link_config={"bridge": "lxcbr0"},
+            ip_config={"address": "10.0.0.5", "subnet": "24"})
+        fake = self._run_set(["lxc", "set", "box", "--network", "host"],
+                             fake=_FakeSetInstance(start))
+        assert fake.network.mode is NetworkMode.HOST
+        # A non-bridge type drops the bridge and clears L3 (set_cmd parity).
+        assert "bridge" not in fake.network.link_config
+        assert fake.network.ip_config == {}
 
-    def test_set_ip_gateway_dns_hostname_thread_through(self):
-        kw = self._run_set([
+    def test_set_ip_gateway_dns_hostname_build_static(self):
+        from kento import NetworkMode
+        fake = self._run_set([
             "set", "box", "--ip", "192.168.0.10/24",
             "--gateway", "192.168.0.1", "--dns", "1.1.1.1",
             "--hostname", "myhost"])
-        assert kw["ip"] == "192.168.0.10/24"
-        assert kw["gateway"] == "192.168.0.1"
-        assert kw["dns"] == "1.1.1.1"
-        assert kw["hostname"] == "myhost"
+        assert fake.network.mode is NetworkMode.STATIC
+        assert fake.network.ip_config["address"] == "192.168.0.10"
+        assert fake.network.ip_config["subnet"] == "24"
+        assert fake.network.ip_config["gateway"] == "192.168.0.1"
+        assert fake.network.ip_config["dns1"] == "1.1.1.1"
+        assert fake.hostname == "myhost"
 
     def test_set_port_is_repeatable_list(self):
-        kw = self._run_set(["set", "box", "--port", "10022:22"])
-        assert kw["port"] == ["10022:22"]
+        from kento import ForwardProtocol
+        fake = self._run_set(["set", "box", "--port", "10022:22"])
+        assert fake.forwards == {
+            (ForwardProtocol.TCP, None, 10022): (None, 22)}
+
+    def test_set_port_repeatable_multiple(self):
+        from kento import ForwardProtocol
+        fake = self._run_set(["set", "box", "--port", "10022:22",
+                              "--port", "8080:80"])
+        assert fake.forwards == {
+            (ForwardProtocol.TCP, None, 10022): (None, 22),
+            (ForwardProtocol.TCP, None, 8080): (None, 80)}
 
     def test_set_port_clear_sentinel(self):
-        kw = self._run_set(["set", "box", "--port", ""])
-        assert kw["port"] == [""]
+        fake = self._run_set(["set", "box", "--port", ""])
+        # The CLI clear sentinel ('') -> an empty forwards map (declarative).
+        assert fake.forwards == {}
 
-    def test_set_network_bridge_threads_through(self):
-        kw = self._run_set(["vm", "set", "box", "--network", "usermode"])
-        assert kw["network"] == "usermode"
-        assert kw["namespace"] == "vm"
+    def test_set_network_usermode_builds_user(self):
+        from kento import NetworkMode
+        fake = self._run_set(["vm", "set", "box", "--network", "usermode"])
+        assert fake.network.mode is NetworkMode.USER
 
-    def test_set_no_net_flags_are_none(self):
-        kw = self._run_set(["set", "box", "--memory", "1024"])
-        assert kw["network"] is None
-        assert kw["ip"] is None
-        assert kw["port"] is None
+    def test_set_no_net_flags_leaves_network_untouched(self):
+        from kento import NetworkConnection, NetworkMode
+        fake = _FakeSetInstance(NetworkConnection(mode=NetworkMode.DHCP))
+        self._run_set(["set", "box", "--memory", "1024"], fake=fake)
+        # Only --memory was provided: network/forwards setters never fired.
+        assert fake.network_set_count == 0
+        assert fake.forwards_set_count == 0
+        assert fake.resources == {"memory": 1024}
 
     def test_set_ip_validated_at_parse_time(self, capsys):
         """--ip reuses create's _validate_ip, so a bad value exits 2."""
         with pytest.raises(SystemExit) as exc:
             main(["set", "box", "--ip", "notanip"])
         assert exc.value.code == 2
+
+    def test_set_ip_dhcp_clears_static(self):
+        from kento import NetworkConnection, NetworkMode
+        start = NetworkConnection(
+            mode=NetworkMode.STATIC,
+            link_config={"bridge": "lxcbr0"},
+            ip_config={"address": "10.0.0.5", "subnet": "24",
+                       "gateway": "10.0.0.1"})
+        fake = self._run_set(["lxc", "set", "box", "--ip", "dhcp"],
+                             fake=_FakeSetInstance(start))
+        assert fake.network.mode is NetworkMode.DHCP
+        assert "address" not in fake.network.ip_config
+        assert "gateway" not in fake.network.ip_config
+        # The bridge attachment is preserved (still bridge networking).
+        assert fake.network.link_config["bridge"] == "lxcbr0"
+
+    def test_set_gateway_without_static_ip_rejected(self, capsys):
+        """--gateway on a non-static connection is rejected (set_cmd parity),
+        not silently dropped by the typed decomposition (gate C)."""
+        from kento import NetworkConnection, NetworkMode
+        fake = _FakeSetInstance(NetworkConnection(mode=NetworkMode.DHCP))
+        with patch("kento_cli._resolve_instance", return_value=fake), \
+             pytest.raises(SystemExit) as exc:
+            main(["set", "box", "--gateway", "10.0.0.1"])
+        assert exc.value.code == 1
+        assert "static" in capsys.readouterr().err.lower()
+        assert fake.network_set_count == 0
+
+    def test_set_ip_on_non_bridge_rejected(self, capsys):
+        """--ip with --network host is rejected (--ip requires bridge), matching
+        set_cmd._validate_net_identity rather than coercing to STATIC."""
+        from kento import NetworkConnection, NetworkMode
+        fake = _FakeSetInstance(NetworkConnection(mode=NetworkMode.DHCP))
+        with patch("kento_cli._resolve_instance", return_value=fake), \
+             pytest.raises(SystemExit) as exc:
+            main(["lxc", "set", "box", "--network", "host",
+                  "--ip", "10.0.0.5/24"])
+        assert exc.value.code == 1
+        assert "bridge" in capsys.readouterr().err.lower()
+        assert fake.network_set_count == 0
+
+    def test_set_dns_clear_sentinel(self):
+        from kento import NetworkConnection, NetworkMode
+        start = NetworkConnection(
+            mode=NetworkMode.STATIC,
+            link_config={"bridge": "lxcbr0"},
+            ip_config={"address": "10.0.0.5", "subnet": "24",
+                       "dns1": "1.1.1.1"})
+        fake = self._run_set(["lxc", "set", "box", "--dns", ""],
+                             fake=_FakeSetInstance(start))
+        assert "dns1" not in fake.network.ip_config
+        assert fake.network.ip_config["address"] == "10.0.0.5"
+
+
+class TestSetPassthroughArgs:
+    """`kento set` pass-through args re-pointed onto the typed kind properties."""
+
+    def _set(self, argv, fake):
+        with patch("kento_cli._resolve_instance", return_value=fake):
+            main(argv)
+        return fake
+
+    def test_lxc_arg_replace_on_system_container(self):
+        from kento import NetworkConnection, NetworkMode
+        fake = _FakeSetInstance(NetworkConnection(mode=NetworkMode.DHCP))
+        self._set(["lxc", "set", "box", "--lxc-arg", "lxc.foo = bar"], fake)
+        assert fake.lxc_args == ("lxc.foo = bar",)
+
+    def test_lxc_arg_clear_sentinel(self):
+        from kento import NetworkConnection, NetworkMode
+        fake = _FakeSetInstance(NetworkConnection(mode=NetworkMode.DHCP))
+        self._set(["lxc", "set", "box", "--lxc-arg", ""], fake)
+        # '' clears -> the typed setter receives an empty list.
+        assert fake.lxc_args == ()
+
+    def test_lxc_arg_on_vm_raises_mode_error(self, capsys):
+        from kento import NetworkConnection, NetworkMode
+        fake = _FakeSetVM(NetworkConnection(mode=NetworkMode.USER))
+        with patch("kento_cli._resolve_instance", return_value=fake), \
+             pytest.raises(SystemExit) as exc:
+            main(["vm", "set", "box", "--lxc-arg", "lxc.foo = bar"])
+        assert exc.value.code == 1
+        assert "vm" in capsys.readouterr().err.lower()
+
+    def test_qemu_arg_replace_on_vm(self):
+        from kento import NetworkConnection, NetworkMode
+        fake = _FakeSetVM(NetworkConnection(mode=NetworkMode.USER))
+        # --qemu-arg is repeatable (one value each); use = so leading-dash
+        # values aren't parsed as flags.
+        self._set(["vm", "set", "box", "--qemu-arg=-smbios",
+                   "--qemu-arg=type=1"], fake)
+        assert fake.qemu_args == ("-smbios", "type=1")
+
+    def test_qemu_arg_on_lxc_raises_mode_error(self, capsys):
+        from kento import NetworkConnection, NetworkMode
+        fake = _FakeSetInstance(NetworkConnection(mode=NetworkMode.DHCP))
+        with patch("kento_cli._resolve_instance", return_value=fake), \
+             pytest.raises(SystemExit) as exc:
+            main(["lxc", "set", "box", "--qemu-arg=-foo"])
+        assert exc.value.code == 1
+        assert "vm modes only" in capsys.readouterr().err.lower()
+
+    def test_pve_arg_routes_to_extra_args(self):
+        from kento import NetworkConnection, NetworkMode
+        fake = _FakeSetInstance(NetworkConnection(mode=NetworkMode.DHCP))
+        self._set(["set", "box", "--pve-arg", "tags: kento"], fake)
+        assert fake.extra_args == ("tags: kento",)
+
+    def test_memory_cores_rmw_only_provided(self):
+        from kento import NetworkConnection, NetworkMode
+        fake = _FakeSetInstance(NetworkConnection(mode=NetworkMode.DHCP))
+        fake._resources = {"memory": 512, "cores": 2}
+        self._set(["set", "box", "--memory", "2048"], fake)
+        # Only memory replaced; cores untouched (only-provided-fields).
+        assert fake.resources == {"memory": 2048, "cores": 2}
 
 
 class TestPortNetworkValidation:
@@ -1438,51 +1631,82 @@ class TestPortNetworkValidation:
         assert "host" in err or "none" in err
 
     def test_port_with_bridge_passes_to_create(self):
-        """--port with --network bridge reaches create() (valid for LXC)."""
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create), \
-             patch("kento._bridge_exists", return_value=True):
-            main(["lxc", "create", "--port", "10022:22", "--network", "bridge=lxcbr0",
-                  "debian:12"])
-        mock_create.assert_called_once()
-        assert mock_create.call_args[1]["port"] == "10022:22"
+        """--port with --network bridge builds the typed forwards map (LXC)."""
+        from kento import ForwardProtocol
+        with patch("kento._bridge_exists", return_value=True):
+            call = _run_create(
+                ["lxc", "create", "--port", "10022:22",
+                 "--network", "bridge=lxcbr0", "debian:12"])
+        # --port (repeatable, Phase-5 delta) -> the typed forwards map.
+        assert call.kwargs["forwards"] == {
+            (ForwardProtocol.TCP, None, 10022): (None, 22)}
 
     def test_port_without_network_passes_to_create(self):
-        """--port without --network reaches create() (auto-detect)."""
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create):
-            main(["lxc", "create", "--port", "10022:22", "debian:12"])
-        mock_create.assert_called_once()
-        assert mock_create.call_args[1]["port"] == "10022:22"
+        """--port without --network builds the typed forwards map (auto-detect)."""
+        from kento import ForwardProtocol
+        call = _run_create(["lxc", "create", "--port", "10022:22", "debian:12"])
+        assert call.kwargs["forwards"] == {
+            (ForwardProtocol.TCP, None, 10022): (None, 22)}
+
+    def test_port_repeatable_multiple_forwards(self):
+        """--port is repeatable: multiple flags -> multiple typed forwards."""
+        from kento import ForwardProtocol
+        call = _run_create(
+            ["lxc", "create", "--port", "10022:22", "--port", "8080:80",
+             "debian:12"])
+        assert call.kwargs["forwards"] == {
+            (ForwardProtocol.TCP, None, 10022): (None, 22),
+            (ForwardProtocol.TCP, None, 8080): (None, 80)}
 
 
 class TestVmScopeOverridesMode:
     """kento vm create always forces mode=vm, even with --pve flag."""
 
     def test_vm_create_with_pve_flag_forces_vm(self):
-        """kento vm create --pve <image> sets mode to 'vm' (pve=True passed separately)."""
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create):
-            main(["vm", "create", "--pve", "debian:12"])
-        mock_create.assert_called_once()
-        assert mock_create.call_args[1]["mode"] == "vm"
+        """kento vm create --pve --vmid N dispatches the VM kind w/ a PVE platform
+        carrying the vmid (forced PVE at a chosen id)."""
+        from kento import PlatformMode
+        with patch("kento.SystemContainer.create") as msc, \
+             patch("kento.VirtualMachine.create") as mvm:
+            main(["vm", "create", "--pve", "--vmid", "200", "debian:12"])
+        mvm.assert_called_once()
+        assert not msc.called
+        platform = mvm.call_args.kwargs["platform"]
+        assert platform.mode is PlatformMode.PVE
+        assert platform.mid == 200
 
     def test_vm_create_without_flags_forces_vm(self):
-        """kento vm create <image> sets mode to 'vm' (regression check)."""
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create):
+        """kento vm create <image> dispatches the VM kind (regression check)."""
+        with patch("kento.SystemContainer.create") as msc, \
+             patch("kento.VirtualMachine.create") as mvm:
             main(["vm", "create", "debian:12"])
-        mock_create.assert_called_once()
-        assert mock_create.call_args[1]["mode"] == "vm"
+        mvm.assert_called_once()
+        assert not msc.called
 
     def test_lxc_create_with_pve_flag(self):
-        """kento lxc create --pve <image> sets mode='lxc' and pve=True."""
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create):
+        """kento lxc create --pve --vmid N dispatches the LXC kind w/ a PVE
+        platform carrying the vmid."""
+        from kento import PlatformMode
+        with patch("kento.SystemContainer.create") as msc, \
+             patch("kento.VirtualMachine.create") as mvm:
+            main(["lxc", "create", "--pve", "--vmid", "200", "debian:12"])
+        msc.assert_called_once()
+        assert not mvm.called
+        platform = msc.call_args.kwargs["platform"]
+        assert platform.mode is PlatformMode.PVE
+        assert platform.mid == 200
+
+    def test_lxc_create_pve_auto_vmid_uses_autodetect(self):
+        """--pve WITHOUT --vmid maps to platform=None (auto-detect) + mid=None
+        (auto-allocate) — a valid PVE identity profile needs a concrete vmid, so
+        the auto-vmid PVE path rides auto-detection (Phase-6 disclosed nuance)."""
+        with patch("kento.SystemContainer.create") as msc, \
+             patch("kento.VirtualMachine.create") as mvm:
             main(["lxc", "create", "--pve", "debian:12"])
-        mock_create.assert_called_once()
-        assert mock_create.call_args[1]["mode"] == "lxc"
-        assert mock_create.call_args[1]["pve"] is True
+        msc.assert_called_once()
+        assert not mvm.called
+        assert msc.call_args.kwargs["platform"] is None
+        assert msc.call_args.kwargs["mid"] is None
 
 
 class TestMemoryCoresFlags:
@@ -1517,51 +1741,40 @@ class TestMemoryCoresFlags:
         assert "--cores" in output
 
     def test_memory_default_none(self):
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create):
-            main(["lxc", "create", "debian:12"])
-        assert mock_create.call_args[1]["memory"] is None
+        # No --memory/--cores -> the resources bag is None (create.py defaults).
+        call = _run_create(["lxc", "create", "debian:12"])
+        assert call.kwargs["resources"] is None
 
     def test_cores_default_none(self):
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create):
-            main(["lxc", "create", "debian:12"])
-        assert mock_create.call_args[1]["cores"] is None
+        call = _run_create(["lxc", "create", "debian:12"])
+        assert call.kwargs["resources"] is None
 
     def test_memory_passes_through(self):
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create):
-            main(["lxc", "create", "--memory", "1024", "debian:12"])
-        assert mock_create.call_args[1]["memory"] == 1024
+        call = _run_create(["lxc", "create", "--memory", "1024", "debian:12"])
+        assert call.kwargs["resources"] == {"memory": 1024}
 
     def test_cores_passes_through(self):
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create):
-            main(["lxc", "create", "--cores", "4", "debian:12"])
-        assert mock_create.call_args[1]["cores"] == 4
+        call = _run_create(["lxc", "create", "--cores", "4", "debian:12"])
+        assert call.kwargs["resources"] == {"cores": 4}
 
     def test_memory_and_cores_via_run(self):
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create):
-            main(["lxc", "run", "--memory", "2048", "--cores", "2", "debian:12"])
-        assert mock_create.call_args[1]["memory"] == 2048
-        assert mock_create.call_args[1]["cores"] == 2
-        assert mock_create.call_args[1]["start"] is True
+        call = _run_create(
+            ["lxc", "run", "--memory", "2048", "--cores", "2", "debian:12"])
+        assert call.kwargs["resources"] == {"memory": 2048, "cores": 2}
+        assert call.kwargs["start"] is True
 
     def test_memory_and_cores_via_vm_create(self):
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create):
+        with patch("kento.SystemContainer.create") as msc, \
+             patch("kento.VirtualMachine.create") as mvm:
             main(["vm", "create", "--memory", "4096", "--cores", "8", "debian:12"])
-        assert mock_create.call_args[1]["memory"] == 4096
-        assert mock_create.call_args[1]["cores"] == 8
-        assert mock_create.call_args[1]["mode"] == "vm"
+        mvm.assert_called_once()
+        assert not msc.called
+        assert mvm.call_args.kwargs["resources"] == {"memory": 4096, "cores": 8}
 
     def test_memory_and_cores_via_lxc_create(self):
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create):
-            main(["lxc", "create", "--memory", "256", "--cores", "1", "debian:12"])
-        assert mock_create.call_args[1]["memory"] == 256
-        assert mock_create.call_args[1]["cores"] == 1
+        call = _run_create(
+            ["lxc", "create", "--memory", "256", "--cores", "1", "debian:12"])
+        assert call.kwargs["resources"] == {"memory": 256, "cores": 1}
 
 
 class TestForceFlag:
@@ -1570,43 +1783,92 @@ class TestForceFlag:
     """
 
     def test_lxc_create_force_passes_to_create(self):
-        """kento lxc create --force reaches create() with force=True."""
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create):
-            main(["lxc", "create", "--force", "debian:13"])
-        mock_create.assert_called_once()
-        assert mock_create.call_args[1]["force"] is True
+        """kento lxc create --force reaches the typed create with force=True."""
+        call = _run_create(["lxc", "create", "--force", "debian:13"])
+        assert call.kwargs["force"] is True
 
     def test_lxc_create_force_default_false(self):
-        """Without --force, create() is called with force=False."""
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create):
-            main(["lxc", "create", "debian:13"])
-        mock_create.assert_called_once()
-        assert mock_create.call_args[1]["force"] is False
+        """Without --force, the typed create is called with force=False."""
+        call = _run_create(["lxc", "create", "debian:13"])
+        assert call.kwargs["force"] is False
 
     def test_vm_create_force_passes_to_create(self):
-        """kento vm create --force reaches create() with force=True."""
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create):
-            main(["vm", "create", "--force", "debian:13"])
-        mock_create.assert_called_once()
-        assert mock_create.call_args[1]["force"] is True
+        """kento vm create --force reaches the typed create with force=True."""
+        call = _run_create(["vm", "create", "--force", "debian:13"])
+        assert call.kwargs["force"] is True
 
     def test_lxc_run_force_passes_to_create(self):
-        """kento lxc run --force reaches create() with force=True and start=True."""
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create):
-            main(["lxc", "run", "--force", "debian:13"])
-        mock_create.assert_called_once()
-        assert mock_create.call_args[1]["force"] is True
-        assert mock_create.call_args[1]["start"] is True
+        """kento lxc run --force reaches the typed create (force=True, start=True)."""
+        call = _run_create(["lxc", "run", "--force", "debian:13"])
+        assert call.kwargs["force"] is True
+        assert call.kwargs["start"] is True
 
     def test_vm_run_force_passes_to_create(self):
-        """kento vm run --force reaches create() with force=True and start=True."""
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create):
-            main(["vm", "run", "--force", "debian:13"])
-        mock_create.assert_called_once()
-        assert mock_create.call_args[1]["force"] is True
-        assert mock_create.call_args[1]["start"] is True
+        """kento vm run --force reaches the typed create (force=True, start=True)."""
+        call = _run_create(["vm", "run", "--force", "debian:13"])
+        assert call.kwargs["force"] is True
+        assert call.kwargs["start"] is True
+
+
+class TestCreateLongTailReachesTypedCreate:
+    """Regression net for the #1 risk (create flag drop): the create-time long
+    tail must reach the typed create. Complements the ssh-*/mac/port/resources/
+    env coverage — this pins searchdomain/timezone/config_mode, which had no
+    create-side assertion (Editor Minor 1)."""
+
+    def test_searchdomain_timezone_config_mode_reach_create(self):
+        call = _run_create([
+            "lxc", "create",
+            "--searchdomain", "example.com",
+            "--timezone", "Europe/Berlin",
+            "--config-mode", "cloudinit",
+            "debian:12"])
+        # Each long-tail flag is threaded to the typed create verbatim. Dropping
+        # any one of them in the handler reddens the matching assertion.
+        assert call.kwargs["searchdomain"] == "example.com"
+        assert call.kwargs["timezone"] == "Europe/Berlin"
+        assert call.kwargs["config_mode"] == "cloudinit"
+
+    def test_long_tail_defaults_when_unset(self):
+        # Counter-test: unset -> create.py's defaults (byte-identical posture).
+        call = _run_create(["lxc", "create", "debian:12"])
+        assert call.kwargs["searchdomain"] is None
+        assert call.kwargs["timezone"] is None
+        assert call.kwargs["config_mode"] == "auto"
+
+
+class TestCreateStaticNetworkConstruction:
+    """The CREATE static-network construction path (_build_create_network) had no
+    create-side test (Editor Minor 2). Pins --ip/--gateway/--dns -> a STATIC
+    NetworkConnection with the CIDR split into address/subnet."""
+
+    def test_static_network_built_and_passed(self):
+        from kento import NetworkMode
+        with patch("kento._bridge_exists", return_value=True):
+            call = _run_create([
+                "lxc", "create",
+                "--network", "bridge=lxcbr0",
+                "--ip", "10.0.0.5/24",
+                "--gateway", "10.0.0.1",
+                "--dns", "1.1.1.1",
+                "debian:12"])
+        conn = call.kwargs["network"]
+        assert conn.mode is NetworkMode.STATIC
+        assert conn.link_config["bridge"] == "lxcbr0"
+        # The CIDR is split at the boundary into address + subnet; corrupting the
+        # static address build reddens this assertion.
+        assert conn.ip_config["address"] == "10.0.0.5"
+        assert conn.ip_config["subnet"] == "24"
+        assert conn.ip_config["gateway"] == "10.0.0.1"
+        assert conn.ip_config["dns1"] == "1.1.1.1"
+
+    def test_static_ip_without_network_flag_is_static_bridge(self):
+        # --ip with no --network -> STATIC, bridge family (create.py auto-detects
+        # the bridge name); the address is still split from the CIDR.
+        from kento import NetworkMode
+        call = _run_create(
+            ["lxc", "create", "--ip", "192.168.0.10/22", "debian:12"])
+        conn = call.kwargs["network"]
+        assert conn.mode is NetworkMode.STATIC
+        assert conn.ip_config["address"] == "192.168.0.10"
+        assert conn.ip_config["subnet"] == "22"
