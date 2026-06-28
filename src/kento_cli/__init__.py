@@ -850,47 +850,83 @@ def _dispatch_create(args, scope: str | None) -> None:
 
 
 def _dispatch_multi(args, scope: str | None, subcmd: str) -> None:
+    """Re-pointed start/stop/shutdown/destroy/rm/scrub onto Instance.* (Phase 6).
+
+    Each name is resolved to its typed handle via the polymorphic ``get`` entry
+    point (the same scope->class mapping ``info``/``list`` use, §10.1), then the
+    matching lifecycle method (M5 ``start`` / M6 ``stop`` / M7 ``destroy`` / M8
+    ``scrub``) is called. Per-name errors are isolated and counted exactly as
+    before — one bad name does not abort the rest; any failure makes the process
+    exit 1 (the legacy ``errors`` accumulator contract).
+
+    Behavior deltas surfaced here (banked-Jei policy — CHANGELOG'd):
+
+    * **stop (M6)** — the typed ``stop`` redesign is the deliberate improvement.
+      Plain ``stop`` (no flags) and ``--graceful-only`` BOTH map to
+      ``force=False``: a graceful stop that NEVER hard-kills and raises
+      ``StopTimeout`` ("cannot stop; try force") if the guest is still up. Today's
+      default stop killed-after-grace; now you must opt into ``--force``.
+      ``--force`` => ``force=True``; ``--timeout N`` => ``timeout=N`` (the grace
+      window). ``--force --timeout N`` (grace-then-kill) is now VALID (was a
+      ValidationError). ``--graceful-only --force`` stays rejected (contradictory).
+      StopTimeout is a KentoError, so ``_handle`` maps it to exit 1 — preserving
+      today's non-zero exit for a stop that does not take.
+    * **destroy (M7)** — now releases the instance's OWN image hold (prevents
+      orphan-hold buildup); ``--force`` => force-stop-then-remove. ``--force``
+      absent on a running instance raises ``StateError`` (exit 1), as before.
+    """
     from kento import validate_name
     errors = 0
     for container_name in args.name:
         try:
             validate_name(container_name)
-            if scope is None:
-                from kento import resolve_any
-                container_dir, mode = resolve_any(container_name)
-            elif scope == "lxc":
-                from kento import read_mode, resolve_in_namespace
-                container_dir = resolve_in_namespace(container_name, "lxc")
-                mode = read_mode(container_dir)
-            else:  # scope == "vm"
-                from kento import read_mode, resolve_in_namespace
-                container_dir = resolve_in_namespace(container_name, "vm")
-                mode = read_mode(container_dir, "vm")
+            inst = _resolve_instance(container_name, scope)
 
             if subcmd == "start":
-                from kento.start import start
-                start(container_name, container_dir=container_dir, mode=mode)
+                inst.start()
             elif subcmd in ("shutdown", "stop"):
-                from kento.stop import shutdown
-                shutdown(
-                    container_name,
-                    force=args.force,
-                    container_dir=container_dir,
-                    mode=mode,
-                    timeout=getattr(args, "timeout", None),
-                    graceful_only=getattr(args, "graceful_only", False),
-                )
+                force, timeout = _stop_args(args)
+                inst.stop(timeout=timeout, force=force)
             elif subcmd in ("destroy", "rm"):
-                from kento.destroy import destroy
-                destroy(container_name, force=args.force, container_dir=container_dir, mode=mode)
+                inst.destroy(force=args.force)
             elif subcmd == "scrub":
-                from kento.reset import reset
-                reset(container_name, container_dir=container_dir, mode=mode)
+                inst.scrub()
         except KentoError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             errors += 1
     if errors:
         sys.exit(1)
+
+
+def _stop_args(args) -> tuple[bool, int | None]:
+    """Map today's stop/shutdown CLI flags onto M6 ``(force, timeout)`` (§11.2).
+
+    * ``--force``          -> ``force=True`` (hard kill; with ``--timeout N`` a
+      grace-then-kill window — now VALID, was a ValidationError before M6).
+    * ``--graceful-only``  -> ``force=False`` (graceful, never kill — the SAME as
+      the new default; the flag is now redundant but still accepted).
+    * default / no flags   -> ``force=False`` (graceful, never kill; raises
+      ``StopTimeout`` if the guest stays up — the M6 redesign, CHANGELOG'd).
+    * ``--timeout N``      -> ``timeout=N`` (the grace window).
+
+    Rejects the one genuinely contradictory combination, ``--graceful-only
+    --force`` (force=True vs the explicit never-kill request), with the legacy
+    ValidationError so the long-standing guard is preserved.
+    """
+    from kento.errors import ValidationError
+
+    force = bool(args.force)
+    graceful_only = bool(getattr(args, "graceful_only", False))
+    timeout = getattr(args, "timeout", None)
+
+    if graceful_only and force:
+        raise ValidationError(
+            "--graceful-only and --force are mutually exclusive "
+            "(--graceful-only never hard-kills; --force always does)."
+        )
+    # --graceful-only is now exactly the default (M6 force=False never kills),
+    # so it folds into force=False; no separate plumbing needed.
+    return force, timeout
 
 
 def _dispatch_info(args, scope: str | None) -> None:
@@ -938,10 +974,21 @@ def _resolve_instance(name: str, scope: str | None):
 
 
 def _dispatch_attach(args, scope: str | None) -> None:
+    """Re-pointed ``attach``/``enter`` onto ``Instance.attach`` (M12, §11.3).
+
+    EXIT-CODE DELTA (disclosed, CHANGELOG'd): the typed ``attach() -> None``
+    deliberately DROPS the wrapped tool's exit code (§11.3 — an interactive
+    console session's last-command exit is not a meaningful result; a clean
+    detach and a failing last command are indistinguishable). So ``attach`` now
+    exits 0 on a clean detach instead of propagating ``lxc-attach``/``pct
+    enter``/``qm terminal``'s code. A genuine failure to attach at all (no serial
+    socket, not a tty) is surfaced as a typed ``StateError`` by ``attach.attach``
+    -> ``_handle`` -> exit 1, so real failures still report non-zero.
+    """
     from kento import validate_name
     validate_name(args.name)
-    from kento.attach import attach
-    sys.exit(attach(args.name, namespace=scope))
+    inst = _resolve_instance(args.name, scope)
+    inst.attach()
 
 
 def _dispatch_set(args, scope: str | None) -> None:
@@ -956,42 +1003,168 @@ def _dispatch_set(args, scope: str | None) -> None:
                      namespace=scope))
 
 
+def _resolve_vm(name: str, scope: str | None):
+    """Resolve ``name`` to a ``VirtualMachine`` handle for suspend/resume (§11.4).
+
+    ``suspend``/``resume`` are VM-only (M17/M18 live on ``VirtualMachine``).
+    Resolve via the scope-aware ``get`` (so ``kento vm suspend`` narrows, bare
+    ``kento suspend`` resolves the concrete kind), then reject a non-VM with the
+    legacy LXC-unsupported ``ModeError`` message so today's rejection text + exit
+    1 are preserved (a bare LXC name would otherwise surface ``get``'s
+    kind-mismatch error instead of the suspend/resume guidance).
+    """
+    inst = _resolve_instance(name, scope)
+    from kento import VirtualMachine
+    if not isinstance(inst, VirtualMachine):
+        from kento.errors import ModeError
+        raise ModeError(
+            "suspend/resume is not supported for LXC instances; "
+            "use 'kento stop' / 'kento start'."
+        )
+    return inst
+
+
 def _dispatch_suspend(args, scope: str | None) -> None:
+    """Re-pointed ``suspend`` onto ``VirtualMachine.suspend`` (M17, §11.4)."""
     from kento import validate_name
     validate_name(args.name)
-    from kento.suspend import suspend
-    sys.exit(suspend(args.name, namespace=scope))
+    _resolve_vm(args.name, scope).suspend()
 
 
 def _dispatch_resume(args, scope: str | None) -> None:
+    """Re-pointed ``resume`` onto ``VirtualMachine.resume`` (M18, §11.4)."""
     from kento import validate_name
     validate_name(args.name)
-    from kento.suspend import resume
-    sys.exit(resume(args.name, namespace=scope))
+    _resolve_vm(args.name, scope).resume()
 
 
 def _dispatch_exec(args, scope: str | None) -> None:
+    """Re-pointed ``exec`` onto ``SystemContainer.exec`` (M13, §11.3).
+
+    ``exec`` is LXC-only (the method lives on ``SystemContainer``; a VM has no
+    in-guest agent). Resolve via the scope-aware ``get``, reject a non-LXC kind
+    with the legacy ``ModeError`` text (so ``kento vm exec`` / a bare VM name
+    still report "use attach/SSH" + exit 1), then run the command and propagate
+    its exit code (M13 ``exec -> int`` — non-zero is a result, not an error, and
+    is passed straight through to ``sys.exit``, preserving today's contract).
+    """
     from kento import validate_name
     validate_name(args.name)
     # argparse.REMAINDER captures a leading '--' verbatim; strip it so both
     # 'kento exec foo -- ls -la' and 'kento exec foo ls -la' pass the same
-    # command list to exec_cmd.
+    # command list to exec.
     command = list(args.exec_command)
     if command and command[0] == "--":
         command = command[1:]
-    from kento.exec_cmd import exec_cmd
-    sys.exit(exec_cmd(args.name, command, namespace=scope))
+    inst = _resolve_lxc(args.name, scope, what="exec")
+    sys.exit(inst.exec(command))
+
+
+def _resolve_lxc(name: str, scope: str | None, *, what: str):
+    """Resolve ``name`` to a ``SystemContainer`` handle for exec/logs (§11.3).
+
+    ``exec``/``logs`` are LXC-only (the methods live on ``SystemContainer``).
+    Resolve via the scope-aware ``get``, then reject a non-LXC kind with the
+    runtime's own ``ModeError`` text so ``kento vm exec``/``kento vm logs`` (and
+    a bare VM name) keep today's "use attach/SSH" rejection + exit 1 rather than
+    surfacing ``get``'s kind-mismatch error or an ``AttributeError``.
+    """
+    inst = _resolve_instance(name, scope)
+    from kento import SystemContainer
+    if not isinstance(inst, SystemContainer):
+        from kento.errors import ModeError
+        raise ModeError(
+            f"{what} is only supported for LXC/PVE-LXC instances "
+            "(use attach or SSH for VMs)."
+        )
+    return inst
 
 
 def _dispatch_logs(args, scope: str | None) -> None:
+    """Re-pointed ``logs`` onto ``SystemContainer.logs`` (M14, §11.3).
+
+    BEHAVIOR DELTA (disclosed, CHANGELOG'd): the typed ``logs(*, follow, lines)``
+    supports only the ``-f`` (follow) and ``-n N`` (last N lines) journalctl
+    arguments — the legacy CLI forwarded ARBITRARY journalctl flags verbatim.
+    The handler parses ``-f``/``--follow`` and ``-n N``/``--lines N`` from the
+    REMAINDER and rejects any other arg with a clear error (exit 1). The typed
+    method returns an ``Iterator[str]`` of decoded lines; we print each + flush
+    so a ``follow=True`` tail streams live, and exit 0 at EOF (or 1 on a typed
+    raise via ``_handle``). LXC-only — a VM is rejected with ``ModeError``,
+    preserving today's rejection.
+    """
     from kento import validate_name
     validate_name(args.name)
     # Strip a leading '--' that argparse.REMAINDER may have captured.
     extra = list(args.args)
     if extra and extra[0] == "--":
         extra = extra[1:]
-    from kento.logs import logs
-    sys.exit(logs(args.name, extra, namespace=scope))
+    follow, lines = _parse_logs_args(extra)
+    inst = _resolve_lxc(args.name, scope, what="logs")
+    for line in inst.logs(follow=follow, lines=lines):
+        # Each yielded line is already newline-free (the streamer splits on
+        # newlines); print restores the newline. Flush per line so a live
+        # `follow=True` tail appears immediately rather than buffered.
+        print(line, flush=True)
+
+
+def _parse_logs_args(extra: list[str]) -> tuple[bool, int | None]:
+    """Parse the legacy journalctl REMAINDER into M14 ``(follow, lines)``.
+
+    Accepts only the two flags the typed ``logs`` supports:
+
+    * ``-f`` / ``--follow``  -> ``follow=True``.
+    * ``-n N`` / ``-nN`` / ``--lines N`` / ``--lines=N`` -> ``lines=N``.
+
+    Any other argument is a ``ValidationError`` (exit 1 via ``_handle``) — the
+    typed surface is deliberately narrower than the legacy arbitrary-pass-through
+    (disclosed delta). A non-integer / negative ``-n`` value is likewise rejected
+    at this boundary.
+    """
+    from kento.errors import ValidationError
+
+    follow = False
+    lines: int | None = None
+    i = 0
+    while i < len(extra):
+        arg = extra[i]
+        if arg in ("-f", "--follow"):
+            follow = True
+            i += 1
+        elif arg in ("-n", "--lines"):
+            if i + 1 >= len(extra):
+                raise ValidationError(f"{arg} requires a line count argument.")
+            lines = _parse_logs_count(extra[i + 1])
+            i += 2
+        elif arg.startswith("--lines="):
+            lines = _parse_logs_count(arg.split("=", 1)[1])
+            i += 1
+        elif arg.startswith("-n") and len(arg) > 2:
+            lines = _parse_logs_count(arg[2:])
+            i += 1
+        else:
+            raise ValidationError(
+                f"unsupported logs argument {arg!r}: only -f/--follow and "
+                "-n/--lines N are supported."
+            )
+    return follow, lines
+
+
+def _parse_logs_count(value: str) -> int:
+    """Parse and validate a ``-n``/``--lines`` count (non-negative int)."""
+    from kento.errors import ValidationError
+
+    try:
+        count = int(value)
+    except ValueError:
+        raise ValidationError(
+            f"logs line count must be an integer, got {value!r}."
+        )
+    if count < 0:
+        raise ValidationError(
+            f"logs line count must be >= 0, got {count}."
+        )
+    return count
 
 
 def _dispatch_list(args, scope: str | None) -> None:
