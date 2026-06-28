@@ -345,6 +345,26 @@ _PROBLEM_REPORT = {
 }
 
 
+# A CLEAN STOPPED instance: today's run_diagnostics enumerates ONE instance but
+# that instance emits NO INSTANCE-domain finding (only the host apparmor/vmid/hold
+# checks fire) — so instances_scanned (=1) is NOT recoverable from the findings.
+# This is the case the Editor caught: a finding-derived count would report 0. The
+# projection takes instances_scanned as a caller-supplied parameter; the caller
+# passes the SAME enumeration count run_diagnostics uses.
+_CLEAN_STOPPED_REPORT = {
+    "checks": [
+        {"category": "apparmor", "severity": "ok", "scope": "host",
+         "message": "apparmor profile generated OK", "remediation": None},
+        {"category": "vmid", "severity": "ok", "scope": "host",
+         "message": "no vmid collisions", "remediation": None},
+        {"category": "hold", "severity": "ok", "scope": "host",
+         "message": "all holds consistent", "remediation": None},
+    ],
+    "problem_count": 0,
+    "instances_scanned": 1,  # one instance enumerated, zero instance findings
+}
+
+
 def _typed_diagnosis(report: dict):
     """Build the typed Diagnosis the library's mapper produces from a report."""
     from kento._diagnosis import diagnosis_from_report
@@ -352,34 +372,77 @@ def _typed_diagnosis(report: dict):
     return diagnosis_from_report(report)
 
 
+def _wire(report: dict) -> dict:
+    """Project the typed Diagnosis back to wire, passing the REAL scan count.
+
+    The caller (Block 18) supplies instances_scanned = the enumeration count
+    run_diagnostics used; the golden report carries that count, so the test
+    passes it through exactly as the real handler will.
+    """
+    diag = _typed_diagnosis(report)
+    return proj.diagnosis_to_wire_dict(
+        diag, instances_scanned=report["instances_scanned"])
+
+
 def test_diagnose_clean_json_round_trips():
-    diag = _typed_diagnosis(_CLEAN_REPORT)
-    wire = proj.diagnosis_to_wire_dict(diag)
-    assert wire == _CLEAN_REPORT
+    assert _wire(_CLEAN_REPORT) == _CLEAN_REPORT
 
 
 def test_diagnose_problems_json_round_trips():
-    diag = _typed_diagnosis(_PROBLEM_REPORT)
-    wire = proj.diagnosis_to_wire_dict(diag)
-    assert wire == _PROBLEM_REPORT
+    assert _wire(_PROBLEM_REPORT) == _PROBLEM_REPORT
+
+
+def test_diagnose_clean_stopped_instances_scanned_is_caller_count():
+    """The Editor's BLOCKER repro + mutation guard.
+
+    A clean STOPPED instance enumerates 1 but emits NO instance-domain finding.
+    The wire MUST report instances_scanned == 1 (= len(instances)), NOT 0 (=
+    distinct INSTANCE-domain subjects in the findings). This reddens if the
+    projection ever reverts to deriving the count from findings.
+    """
+    wire = _wire(_CLEAN_STOPPED_REPORT)
+    assert wire == _CLEAN_STOPPED_REPORT
+    assert wire["instances_scanned"] == 1
+    # Prove the divergence the parameter fixes: a finding-derived count would be
+    # 0 (no INSTANCE-domain subjects), so the caller-supplied 1 is load-bearing.
+    from kento import DiagnosisDomain
+
+    diag = _typed_diagnosis(_CLEAN_STOPPED_REPORT)
+    derived = len({
+        f.subject for f in diag.findings
+        if f.domain is DiagnosisDomain.INSTANCE and f.subject is not None
+    })
+    assert derived == 0
+    assert wire["instances_scanned"] != derived
 
 
 def test_diagnose_clean_human_byte_identical():
     diag = _typed_diagnosis(_CLEAN_REPORT)
     golden = _diagnose_mod.format_diagnostics(_CLEAN_REPORT)
-    assert proj.diagnosis_to_human(diag) == golden
+    assert proj.diagnosis_to_human(
+        diag, instances_scanned=_CLEAN_REPORT["instances_scanned"]) == golden
+
+
+def test_diagnose_clean_stopped_human_byte_identical():
+    """The human summary header prints instances_scanned — must be the real count."""
+    diag = _typed_diagnosis(_CLEAN_STOPPED_REPORT)
+    golden = _diagnose_mod.format_diagnostics(_CLEAN_STOPPED_REPORT)
+    out = proj.diagnosis_to_human(
+        diag, instances_scanned=_CLEAN_STOPPED_REPORT["instances_scanned"])
+    assert out == golden
+    assert "(1 instance(s) scanned)" in out
 
 
 def test_diagnose_problems_human_byte_identical():
     diag = _typed_diagnosis(_PROBLEM_REPORT)
     golden = _diagnose_mod.format_diagnostics(_PROBLEM_REPORT)
-    assert proj.diagnosis_to_human(diag) == golden
+    assert proj.diagnosis_to_human(
+        diag, instances_scanned=_PROBLEM_REPORT["instances_scanned"]) == golden
 
 
 def test_diagnose_severity_mapping():
     """WARNING -> warn, ERROR -> error, OK/INFO unchanged (the wire vocab)."""
-    diag = _typed_diagnosis(_PROBLEM_REPORT)
-    wire = proj.diagnosis_to_wire_dict(diag)
+    wire = _wire(_PROBLEM_REPORT)
     severities = {c["category"]: c["severity"] for c in wire["checks"]}
     assert severities["network"] == "warn"
     assert severities["mount"] == "error"
@@ -387,11 +450,9 @@ def test_diagnose_severity_mapping():
     assert severities["apparmor"] == "ok"
 
 
-def test_diagnose_instances_scanned_distinct_instance_subjects():
-    """instances_scanned counts distinct INSTANCE-domain subjects (web, db)."""
-    diag = _typed_diagnosis(_PROBLEM_REPORT)
-    wire = proj.diagnosis_to_wire_dict(diag)
-    assert wire["instances_scanned"] == 2
+def test_diagnose_problem_count_derived():
+    """problem_count = len(problems) (WARNING/ERROR), derived from findings."""
+    wire = _wire(_PROBLEM_REPORT)
     assert wire["problem_count"] == 2
 
 
@@ -400,7 +461,9 @@ def test_diagnose_json_string_indented():
     import json
 
     diag = _typed_diagnosis(_CLEAN_REPORT)
-    assert proj.diagnosis_to_json(diag) == json.dumps(_CLEAN_REPORT, indent=2)
+    out = proj.diagnosis_to_json(
+        diag, instances_scanned=_CLEAN_REPORT["instances_scanned"])
+    assert out == json.dumps(_CLEAN_REPORT, indent=2)
 
 
 def test_diagnose_against_real_run_diagnostics(tmp_path):
@@ -424,7 +487,11 @@ def test_diagnose_against_real_run_diagnostics(tmp_path):
         report = _diagnose_mod.run_diagnostics(None)
 
     typed = diagnosis_from_report(report)
-    wire = proj.diagnosis_to_wire_dict(typed)
+    # Block 18 passes the same enumeration count run_diagnostics used; here we
+    # take it straight from the real report (a named/host scan handler would
+    # compute it from the instances it enumerated).
+    wire = proj.diagnosis_to_wire_dict(
+        typed, instances_scanned=report["instances_scanned"])
     assert wire["checks"] == report["checks"]
     assert wire["problem_count"] == report["problem_count"]
     assert wire["instances_scanned"] == report["instances_scanned"]
@@ -470,6 +537,31 @@ def test_info_multi_port_human_layout(tmp_path):
     with mock.patch("kento_cli._projection.is_running", return_value=False):
         out = proj.instance_to_human(inst, verbose=False)
     assert out == golden
+
+
+def test_info_created_unknown_on_mtime_oserror(tmp_path):
+    """created -> 'unknown' (not a 1969 epoch string) when the mtime probe fails.
+
+    Matches info.py: it re-probes os.path.getmtime live and emits 'unknown' on
+    OSError. The typed loader falls back to fromtimestamp(0); the projection must
+    NOT strftime that sentinel. We force the OSError on BOTH the library reader
+    and the projection so the golden and the projection compare on equal footing
+    (the dir stays present so every other field reads normally).
+    """
+    d = _build_lxc(tmp_path / "lxc", "ghost", image="debian:bookworm",
+                   name="ghost", mode="lxc")
+    inst = _load(d, "lxc")
+
+    def boom(_path):
+        raise OSError("mtime gone")
+
+    with mock.patch("kento.info.os.path.getmtime", boom):
+        golden = _info_golden(d, "ghost", "lxc", as_json=True, verbose=False)
+    with mock.patch("kento_cli._projection.is_running", return_value=False), \
+         mock.patch("kento_cli._projection.os.path.getmtime", boom):
+        out = proj.instance_to_json(inst, verbose=False)
+    assert out == golden
+    assert '"created": "unknown"' in out
 
 
 def test_info_empty_passthrough_lists_present_in_json(lxc_full):

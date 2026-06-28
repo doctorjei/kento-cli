@@ -46,6 +46,8 @@ D3) + §1 (``--json`` is a CLI-edge concern; the library is typed objects).
 from __future__ import annotations
 
 import json
+import os
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -152,9 +154,18 @@ def instance_to_wire_dict(inst: "Instance", *, verbose: bool = False) -> dict:
         layer_paths = []
         data["layer_count"] = 0
 
-    # created — the typed datetime rendered to the legacy second-precision string.
-    # inst.created is the container-dir mtime, the SAME value info.py formats.
-    data["created"] = inst.created.strftime("%Y-%m-%d %H:%M:%S")
+    # created — the legacy second-precision mtime string. info.py reads the dir
+    # mtime live and emits "unknown" on OSError (the dir vanished mid-read); the
+    # typed loader instead falls back to the epoch (fromtimestamp(0)) so the
+    # field is always a real datetime. To stay byte-identical to info.py we
+    # re-probe the mtime HERE and emit "unknown" on failure, rather than
+    # strftime the loader's epoch sentinel (which would print "1969-12-31...").
+    try:
+        mtime = os.path.getmtime(container_dir)
+        data["created"] = datetime.fromtimestamp(mtime).strftime(
+            "%Y-%m-%d %H:%M:%S")
+    except OSError:
+        data["created"] = "unknown"
 
     # ssh host key fingerprints (always present in JSON; {} when none).
     fingerprints, _has_keys = _get_ssh_host_key_fingerprints(container_dir)
@@ -482,7 +493,7 @@ def _finding_to_wire(finding) -> dict:
     }
 
 
-def diagnosis_to_wire_dict(diag: "Diagnosis") -> dict:
+def diagnosis_to_wire_dict(diag: "Diagnosis", *, instances_scanned: int) -> dict:
     """Project a typed ``Diagnosis`` to the legacy ``diagnose --json`` wire dict.
 
     Reproduces ``run_diagnostics``'s return shape (diagnose.py:546-550):
@@ -492,24 +503,26 @@ def diagnosis_to_wire_dict(diag: "Diagnosis") -> dict:
       diagnosis's finding order (the typed model preserves it).
     * ``problem_count`` — ``len(diag.problems)`` (WARNING/ERROR findings); the
       same count the runtime derives (``severity in (warn, error)``).
-    * ``instances_scanned`` — the count of DISTINCT instance subjects (§11.8 the
-      brief). The typed scan emits one finding per scanned INSTANCE-domain
-      subject, so the distinct INSTANCE subjects ARE the instances scanned. HOST
-      findings (apparmor/vmid: subject None) and IMAGE findings do not count; the
-      HOST-domain ``orphan`` finding carries an instance-name subject but is not
-      an INSTANCE-domain scan, so it is excluded by keying on the domain.
-    """
-    # Import here to avoid a hard import-time dependency / the diagnose shadow.
-    from kento import DiagnosisDomain
+    * ``instances_scanned`` — **caller-supplied**, NOT derived from the findings.
 
+    Why ``instances_scanned`` is a parameter and not derived: today's
+    ``run_diagnostics`` sets ``instances_scanned = len(enumerated instances)``
+    (diagnose.py:549) — the count of instances the scan *visited*, which is NOT
+    recoverable from the findings. A clean STOPPED instance can emit no
+    INSTANCE-domain finding at all (only the host apparmor/hold checks fire), so
+    a finding-derived count would report 0 where the real wire reports 1 — and
+    seadog reads this field. The §11.8 "coverage derivable from findings" model
+    assumes a future one-OK-finding-per-subject scan that ``run_diagnostics``
+    does NOT do today; until that diagnose-polish pass lands, the only
+    wire-faithful source is the enumeration count the caller already has.
+
+    The caller (Block 18's diagnose handler) passes the SAME count
+    ``run_diagnostics`` uses — e.g. the number of enumerated instance dirs /
+    ``len(Instance.list())`` for a host-wide scan, ``1`` for a named-instance
+    scan — so the projected wire matches byte-for-byte.
+    """
     checks = [_finding_to_wire(f) for f in diag.findings]
     problem_count = len(diag.problems)
-
-    instance_subjects = {
-        f.subject for f in diag.findings
-        if f.domain is DiagnosisDomain.INSTANCE and f.subject is not None
-    }
-    instances_scanned = len(instance_subjects)
 
     return {
         "checks": checks,
@@ -518,30 +531,38 @@ def diagnosis_to_wire_dict(diag: "Diagnosis") -> dict:
     }
 
 
-def diagnosis_to_json(diag: "Diagnosis") -> str:
+def diagnosis_to_json(diag: "Diagnosis", *, instances_scanned: int) -> str:
     """The ``diagnose --json`` string — ``json.dumps(..., indent=2)``.
 
     Byte-identical to the legacy ``json.dumps(report, indent=2)`` the CLI emits
     today (insertion order; ``remediation: null`` for ``None``).
+    ``instances_scanned`` is caller-supplied (see :func:`diagnosis_to_wire_dict`).
     """
-    return json.dumps(diagnosis_to_wire_dict(diag), indent=2)
+    return json.dumps(
+        diagnosis_to_wire_dict(diag, instances_scanned=instances_scanned),
+        indent=2,
+    )
 
 
-def diagnosis_to_human(diag: "Diagnosis") -> str:
+def diagnosis_to_human(diag: "Diagnosis", *, instances_scanned: int) -> str:
     """The human ``diagnose`` block, byte-identical to ``format_diagnostics``.
 
     Delegates to the library's ``format_diagnostics`` against the projected wire
     dict — the human renderer is pure string formatting over the wire shape, so
     reusing it (rather than re-implementing the grouping/summary layout) keeps
-    the bytes exact with one source of truth. ``format_diagnostics`` is reached
-    via the ``kento.diagnose`` SUBMODULE (NOT ``from kento import diagnose``,
-    which resolves to the shadowing module-level function — the documented
-    foot-gun).
+    the bytes exact with one source of truth. The summary header itself prints
+    ``instances_scanned`` (``"... (N instance(s) scanned)."``), so it must be the
+    real caller-supplied count too (see :func:`diagnosis_to_wire_dict`).
+    ``format_diagnostics`` is reached via the ``kento.diagnose`` SUBMODULE (NOT
+    ``from kento import diagnose``, which resolves to the shadowing module-level
+    function — the documented foot-gun).
     """
     import importlib
 
     diagnose_mod = importlib.import_module("kento.diagnose")
-    return diagnose_mod.format_diagnostics(diagnosis_to_wire_dict(diag))
+    return diagnose_mod.format_diagnostics(
+        diagnosis_to_wire_dict(diag, instances_scanned=instances_scanned)
+    )
 
 
 # --------------------------------------------------------------------------- #
