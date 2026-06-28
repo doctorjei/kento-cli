@@ -32,10 +32,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   detach now exits 0 regardless of the last command run in the session (the
   console session's exit code is not a meaningful result). A genuine failure to
   attach (no console/serial socket, not a TTY) still reports a clear error and
-  exits 1.
-- **`logs` accepts only `-f`/`--follow` and `-n`/`--lines N`.** The typed logs
-  stream supports the follow and last-N-lines selectors; arbitrary `journalctl`
-  flags are no longer forwarded verbatim and are rejected with a clear error.
+  exits 1. (The wrapped tool's exit code is not lost — the library captures it on
+  the instance handle and logs it.)
+- **`logs` still forwards arbitrary `journalctl` arguments.** The full journalctl
+  pass-through (`-f`, `-n 50`, `--since ...`, `-u sshd`, ...) is preserved
+  byte-for-byte; `kento logs NAME <any journalctl args>` works exactly as before.
   (`exec` is unchanged: it still returns the in-guest command's exit code.)
 
 ## [1.6.3] - 2026-06-28

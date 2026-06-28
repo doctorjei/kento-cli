@@ -1083,88 +1083,31 @@ def _resolve_lxc(name: str, scope: str | None, *, what: str):
 def _dispatch_logs(args, scope: str | None) -> None:
     """Re-pointed ``logs`` onto ``SystemContainer.logs`` (M14, §11.3).
 
-    BEHAVIOR DELTA (disclosed, CHANGELOG'd): the typed ``logs(*, follow, lines)``
-    supports only the ``-f`` (follow) and ``-n N`` (last N lines) journalctl
-    arguments — the legacy CLI forwarded ARBITRARY journalctl flags verbatim.
-    The handler parses ``-f``/``--follow`` and ``-n N``/``--lines N`` from the
-    REMAINDER and rejects any other arg with a clear error (exit 1). The typed
-    method returns an ``Iterator[str]`` of decoded lines; we print each + flush
-    so a ``follow=True`` tail streams live, and exit 0 at EOF (or 1 on a typed
-    raise via ``_handle``). LXC-only — a VM is rejected with ``ModeError``,
-    preserving today's rejection.
+    Jei-ruled M14 refinement: the legacy CLI's arbitrary ``journalctl``
+    pass-through is PRESERVED. The whole REMAINDER (``-f``, ``-n 50``,
+    ``--since ...``, ``-u sshd``, ...) is forwarded verbatim as the typed method's
+    ``args`` pass-through; ``journalctl`` itself interprets them — byte-identical
+    to the pre-Phase-6 ``logs.logs(name, args)`` invocation. (``follow``/``lines``
+    stay typed conveniences on the library method for programmatic callers; the
+    CLI uses the raw pass-through to keep the full journalctl surface.) The typed
+    method returns an ``Iterator[str]`` of decoded lines; we print each + flush so
+    a ``-f`` tail streams live, exit 0 at EOF (or 1 on a typed raise via
+    ``_handle``). LXC-only — a VM is rejected with ``ModeError``, preserving
+    today's rejection.
     """
     from kento import validate_name
     validate_name(args.name)
-    # Strip a leading '--' that argparse.REMAINDER may have captured.
+    # Strip a leading '--' that argparse.REMAINDER may have captured, then pass
+    # the rest straight through to journalctl (restores today's pass-through).
     extra = list(args.args)
     if extra and extra[0] == "--":
         extra = extra[1:]
-    follow, lines = _parse_logs_args(extra)
     inst = _resolve_lxc(args.name, scope, what="logs")
-    for line in inst.logs(follow=follow, lines=lines):
+    for line in inst.logs(args=extra):
         # Each yielded line is already newline-free (the streamer splits on
         # newlines); print restores the newline. Flush per line so a live
-        # `follow=True` tail appears immediately rather than buffered.
+        # `-f` tail appears immediately rather than buffered.
         print(line, flush=True)
-
-
-def _parse_logs_args(extra: list[str]) -> tuple[bool, int | None]:
-    """Parse the legacy journalctl REMAINDER into M14 ``(follow, lines)``.
-
-    Accepts only the two flags the typed ``logs`` supports:
-
-    * ``-f`` / ``--follow``  -> ``follow=True``.
-    * ``-n N`` / ``-nN`` / ``--lines N`` / ``--lines=N`` -> ``lines=N``.
-
-    Any other argument is a ``ValidationError`` (exit 1 via ``_handle``) — the
-    typed surface is deliberately narrower than the legacy arbitrary-pass-through
-    (disclosed delta). A non-integer / negative ``-n`` value is likewise rejected
-    at this boundary.
-    """
-    from kento.errors import ValidationError
-
-    follow = False
-    lines: int | None = None
-    i = 0
-    while i < len(extra):
-        arg = extra[i]
-        if arg in ("-f", "--follow"):
-            follow = True
-            i += 1
-        elif arg in ("-n", "--lines"):
-            if i + 1 >= len(extra):
-                raise ValidationError(f"{arg} requires a line count argument.")
-            lines = _parse_logs_count(extra[i + 1])
-            i += 2
-        elif arg.startswith("--lines="):
-            lines = _parse_logs_count(arg.split("=", 1)[1])
-            i += 1
-        elif arg.startswith("-n") and len(arg) > 2:
-            lines = _parse_logs_count(arg[2:])
-            i += 1
-        else:
-            raise ValidationError(
-                f"unsupported logs argument {arg!r}: only -f/--follow and "
-                "-n/--lines N are supported."
-            )
-    return follow, lines
-
-
-def _parse_logs_count(value: str) -> int:
-    """Parse and validate a ``-n``/``--lines`` count (non-negative int)."""
-    from kento.errors import ValidationError
-
-    try:
-        count = int(value)
-    except ValueError:
-        raise ValidationError(
-            f"logs line count must be an integer, got {value!r}."
-        )
-    if count < 0:
-        raise ValidationError(
-            f"logs line count must be >= 0, got {count}."
-        )
-    return count
 
 
 def _dispatch_list(args, scope: str | None) -> None:
