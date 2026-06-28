@@ -1,0 +1,574 @@
+"""Golden wire-compat tests for the CLI projection layer (Block 17).
+
+THE wire-compat gate. Each test captures TODAY's exact output from the current
+library string-builders (``kento.info.info`` / ``kento.list.list_containers`` /
+``kento.diagnose.run_diagnostics`` + ``format_diagnostics``) and asserts the
+``kento_cli._projection`` functions reproduce it BYTE-FOR-BYTE from the typed
+``Instance`` / ``Diagnosis`` objects loaded from the SAME on-disk state. The
+library output IS the golden value — capturing it inline (rather than hand-frozen
+strings) keeps the golden anchored to the real wire that ships, so a future
+library tweak that would change the bytes fails here too (the contract is "the
+projection equals the library", which is what Blocks 18+ rely on).
+
+Representative cases per the brief: list (empty / one-lxc / one-vm / mixed / with
+--size); info (lxc / vm / pve / verbose); diagnose (clean / with-problems); both
+human AND --json.
+"""
+
+from __future__ import annotations
+
+import importlib
+from pathlib import Path
+from unittest import mock
+
+import pytest
+
+import kento
+import kento.info as kinfo
+import kento.list as klist
+from kento._instances import _load_snapshot
+from kento_cli import _projection as proj
+
+_diagnose_mod = importlib.import_module("kento.diagnose")
+
+
+# --------------------------------------------------------------------------- #
+# Builders — minimal on-disk instance dirs (the kento-* state files).
+# --------------------------------------------------------------------------- #
+
+
+def _write(d: Path, name: str, content: str) -> None:
+    (d / name).write_text(content)
+
+
+def _build_lxc(base: Path, cid: str, *, image: str, name: str | None = None,
+               mode: str = "lxc", **extra: str) -> Path:
+    d = base / cid
+    d.mkdir(parents=True)
+    _write(d, "kento-image", image + "\n")
+    _write(d, "kento-name", (name or cid) + "\n")
+    _write(d, "kento-mode", mode + "\n")
+    for key, val in extra.items():
+        _write(d, key, val)
+    return d
+
+
+@pytest.fixture
+def lxc_full(tmp_path):
+    """A richly-populated plain-LXC instance dir (every common info field)."""
+    return _build_lxc(
+        tmp_path / "lxc", "web", image="docker.io/library/debian:bookworm",
+        name="web", mode="lxc",
+        **{
+            "kento-config-mode": "injection\n",
+            "kento-port": "10022:22\n",
+            "kento-net": "ip=10.0.3.5/24\ngateway=10.0.3.1\ndns=8.8.8.8\nsearchdomain=lan\n",
+            "kento-mac": "02:11:22:33:44:55\n",
+            "kento-nesting": "1\n",
+            "kento-tz": "Europe/Berlin\n",
+            "kento-ssh-user": "debian\n",
+            "kento-env": "FOO=bar\nBAZ=qux\n",
+            "kento-layers": "/var/lib/kento/layers/a:/var/lib/kento/layers/b\n",
+            "kento-lxc-args": "lxc.cap.drop = sys_admin\n",
+            "kento-memory": "2048\n",
+            "kento-cores": "2\n",
+        },
+    )
+
+
+@pytest.fixture
+def vm_min(tmp_path):
+    """A minimal VM instance dir (a stopped vm with a mac + qemu-arg)."""
+    return _build_lxc(
+        tmp_path / "vm", "builder", image="alpine:3.19", name="builder",
+        mode="vm",
+        **{
+            "kento-mac": "02:aa:bb:cc:dd:ee\n",
+            "kento-qemu-args": "-cpu host\n",
+        },
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Snapshot loader — build a typed Instance from a dir with the runtime probes
+# stubbed deterministically (no root, no live containers).
+# --------------------------------------------------------------------------- #
+
+
+def _load(container_dir: Path, mode: str, *, running: bool = False,
+          pve_config: bool = True):
+    """Load a typed Instance with is_running / pve_config_exists stubbed."""
+    with mock.patch("kento.is_running", return_value=running), \
+         mock.patch("kento.pve_config_exists", return_value=pve_config):
+        return _load_snapshot(container_dir, mode)
+
+
+def _info_golden(container_dir: Path, name: str, mode: str, *,
+                 as_json: bool, verbose: bool, running: bool = False) -> str:
+    """The CURRENT library info() output — the golden value."""
+    with mock.patch.object(kinfo, "is_running", return_value=running):
+        return kinfo.info(name, container_dir=container_dir, mode=mode,
+                          as_json=as_json, verbose=verbose)
+
+
+# --------------------------------------------------------------------------- #
+# info / inspect.
+# --------------------------------------------------------------------------- #
+
+
+def test_info_lxc_json_byte_identical(lxc_full):
+    golden = _info_golden(lxc_full, "web", "lxc", as_json=True, verbose=False)
+    inst = _load(lxc_full, "lxc")
+    with mock.patch("kento_cli._projection.is_running", return_value=False):
+        out = proj.instance_to_json(inst, verbose=False)
+    assert out == golden
+
+
+def test_info_lxc_human_byte_identical(lxc_full):
+    golden = _info_golden(lxc_full, "web", "lxc", as_json=False, verbose=False)
+    inst = _load(lxc_full, "lxc")
+    with mock.patch("kento_cli._projection.is_running", return_value=False):
+        out = proj.instance_to_human(inst, verbose=False)
+    assert out == golden
+
+
+def test_info_vm_json_byte_identical(vm_min):
+    golden = _info_golden(vm_min, "builder", "vm", as_json=True, verbose=False)
+    inst = _load(vm_min, "vm")
+    with mock.patch("kento_cli._projection.is_running", return_value=False):
+        out = proj.instance_to_json(inst, verbose=False)
+    assert out == golden
+
+
+def test_info_vm_human_byte_identical(vm_min):
+    golden = _info_golden(vm_min, "builder", "vm", as_json=False, verbose=False)
+    inst = _load(vm_min, "vm")
+    with mock.patch("kento_cli._projection.is_running", return_value=False):
+        out = proj.instance_to_human(inst, verbose=False)
+    assert out == golden
+
+
+def test_info_pve_lxc_mode_normalized(tmp_path):
+    """A pve (pve-lxc) instance: mode normalizes to 'pve-lxc' in both wires."""
+    d = _build_lxc(tmp_path / "lxc", "100", image="debian:bookworm",
+                   name="ct", mode="pve")
+    golden = _info_golden(d, "ct", "pve", as_json=True, verbose=False)
+    inst = _load(d, "pve")
+    with mock.patch("kento_cli._projection.is_running", return_value=False):
+        out = proj.instance_to_json(inst, verbose=False)
+    assert out == golden
+    assert '"mode": "pve-lxc"' in out
+    assert '"type": "LXC"' in out
+
+
+def test_info_verbose_layers_and_passthrough(tmp_path):
+    """--verbose adds upper_size/layers/layer_sizes + the pass-through section."""
+    layer_a = tmp_path / "layers" / "a"
+    layer_a.mkdir(parents=True)
+    (layer_a / "f").write_text("x" * 100)
+    state = tmp_path / "state"
+    upper = state / "upper"
+    upper.mkdir(parents=True)
+    (upper / "g").write_text("y" * 50)
+    d = _build_lxc(
+        tmp_path / "lxc", "vbose", image="debian:bookworm", name="vbose",
+        mode="lxc",
+        **{
+            "kento-layers": f"{layer_a}\n",
+            "kento-state": f"{state}\n",
+            "kento-lxc-args": "lxc.cap.drop = sys_admin\n",
+        },
+    )
+    golden_json = _info_golden(d, "vbose", "lxc", as_json=True, verbose=True)
+    golden_human = _info_golden(d, "vbose", "lxc", as_json=False, verbose=True)
+    inst = _load(d, "lxc")
+    with mock.patch("kento_cli._projection.is_running", return_value=False):
+        assert proj.instance_to_json(inst, verbose=True) == golden_json
+        assert proj.instance_to_human(inst, verbose=True) == golden_human
+
+
+def test_info_running_status(lxc_full):
+    """A running instance projects status 'running' (the is_running probe)."""
+    golden = _info_golden(lxc_full, "web", "lxc", as_json=True, verbose=False,
+                          running=True)
+    inst = _load(lxc_full, "lxc", running=True)
+    with mock.patch("kento_cli._projection.is_running", return_value=True):
+        out = proj.instance_to_json(inst, verbose=False)
+    assert out == golden
+    assert '"status": "running"' in out
+
+
+# --------------------------------------------------------------------------- #
+# list / ls.
+# --------------------------------------------------------------------------- #
+
+
+def _list_golden(lxc_base: Path, vm_base: Path, *, as_json: bool,
+                 show_size: bool = False, scope=None, running: bool = False,
+                 pve_config: bool = True) -> str:
+    with mock.patch.object(klist, "LXC_BASE", lxc_base), \
+         mock.patch.object(klist, "VM_BASE", vm_base), \
+         mock.patch.object(klist, "is_running", return_value=running), \
+         mock.patch.object(klist, "pve_config_exists", return_value=pve_config):
+        return klist.list_containers(scope=scope, show_size=show_size,
+                                     as_json=as_json)
+
+
+def _load_all(lxc_base: Path, vm_base: Path, *, running: bool = False,
+              pve_config: bool = True):
+    """Load typed Instances from both base dirs (mirrors Instance.list)."""
+    with mock.patch("kento.LXC_BASE", lxc_base), \
+         mock.patch("kento.VM_BASE", vm_base), \
+         mock.patch("kento.is_running", return_value=running), \
+         mock.patch("kento.pve_config_exists", return_value=pve_config):
+        return kento.Instance.list()
+
+
+def test_list_empty_human(tmp_path):
+    lxc_base = tmp_path / "lxc"
+    vm_base = tmp_path / "vm"
+    lxc_base.mkdir()
+    vm_base.mkdir()
+    golden = _list_golden(lxc_base, vm_base, as_json=False)
+    insts = _load_all(lxc_base, vm_base)
+    assert proj.instances_to_human(insts) == golden
+    assert golden == "(no instances found)"
+
+
+def test_list_empty_json(tmp_path):
+    lxc_base = tmp_path / "lxc"
+    vm_base = tmp_path / "vm"
+    lxc_base.mkdir()
+    vm_base.mkdir()
+    golden = _list_golden(lxc_base, vm_base, as_json=True)
+    insts = _load_all(lxc_base, vm_base)
+    assert proj.instances_to_json(insts) == golden
+    assert golden == "[]"
+
+
+def test_list_one_lxc_human_and_json(tmp_path):
+    lxc_base = tmp_path / "lxc"
+    vm_base = tmp_path / "vm"
+    _build_lxc(lxc_base, "web", image="debian:bookworm", name="web", mode="lxc")
+    vm_base.mkdir()
+    golden_h = _list_golden(lxc_base, vm_base, as_json=False)
+    golden_j = _list_golden(lxc_base, vm_base, as_json=True)
+    insts = _load_all(lxc_base, vm_base)
+    assert proj.instances_to_human(insts) == golden_h
+    assert proj.instances_to_json(insts) == golden_j
+
+
+def test_list_one_vm_json_has_mac(tmp_path):
+    lxc_base = tmp_path / "lxc"
+    vm_base = tmp_path / "vm"
+    lxc_base.mkdir()
+    _build_lxc(vm_base, "builder", image="alpine:3.19", name="builder",
+               mode="vm", **{"kento-mac": "02:aa:bb:cc:dd:ee\n"})
+    golden_j = _list_golden(lxc_base, vm_base, as_json=True)
+    insts = _load_all(lxc_base, vm_base)
+    out = proj.instances_to_json(insts)
+    assert out == golden_j
+    assert '"mac": "02:aa:bb:cc:dd:ee"' in out
+
+
+def test_list_mixed_human_and_json(tmp_path):
+    lxc_base = tmp_path / "lxc"
+    vm_base = tmp_path / "vm"
+    _build_lxc(lxc_base, "web", image="debian:bookworm", name="web", mode="lxc",
+               **{"kento-env": "A=1\n"})
+    _build_lxc(vm_base, "builder", image="alpine:3.19", name="builder",
+               mode="vm", **{"kento-mac": "02:aa:bb:cc:dd:ee\n"})
+    golden_h = _list_golden(lxc_base, vm_base, as_json=False)
+    golden_j = _list_golden(lxc_base, vm_base, as_json=True)
+    insts = _load_all(lxc_base, vm_base)
+    assert proj.instances_to_human(insts) == golden_h
+    assert proj.instances_to_json(insts) == golden_j
+
+
+def test_list_with_size_human_and_json(tmp_path):
+    lxc_base = tmp_path / "lxc"
+    vm_base = tmp_path / "vm"
+    state = tmp_path / "state"
+    upper = state / "upper"
+    upper.mkdir(parents=True)
+    (upper / "g").write_text("z" * 100)
+    _build_lxc(lxc_base, "web", image="debian:bookworm", name="web", mode="lxc",
+               **{"kento-state": f"{state}\n"})
+    vm_base.mkdir()
+    golden_h = _list_golden(lxc_base, vm_base, as_json=False, show_size=True)
+    golden_j = _list_golden(lxc_base, vm_base, as_json=True, show_size=True)
+    insts = _load_all(lxc_base, vm_base)
+    assert proj.instances_to_human(insts, show_size=True) == golden_h
+    assert proj.instances_to_json(insts, show_size=True) == golden_j
+
+
+# --------------------------------------------------------------------------- #
+# diagnose.
+# --------------------------------------------------------------------------- #
+
+# Two synthetic run_diagnostics reports — the wire shape diagnose.py emits.
+# The typed Diagnosis is built from these via the library's own mapper, then the
+# projection reverses it; the assertion is that the reversed wire == the original.
+
+_CLEAN_REPORT = {
+    "checks": [
+        {"category": "apparmor", "severity": "ok", "scope": "host",
+         "message": "apparmor profile generated OK", "remediation": None},
+        {"category": "vmid", "severity": "ok", "scope": "host",
+         "message": "no vmid collisions", "remediation": None},
+        {"category": "status", "severity": "ok", "scope": "web",
+         "message": "running", "remediation": None},
+        {"category": "network", "severity": "ok", "scope": "web",
+         "message": "eth0 has an address", "remediation": None},
+    ],
+    "problem_count": 0,
+    "instances_scanned": 1,
+}
+
+_PROBLEM_REPORT = {
+    "checks": [
+        {"category": "apparmor", "severity": "ok", "scope": "host",
+         "message": "apparmor profile generated OK", "remediation": None},
+        {"category": "vmid", "severity": "ok", "scope": "host",
+         "message": "no vmid collisions", "remediation": None},
+        {"category": "status", "severity": "ok", "scope": "web",
+         "message": "running", "remediation": None},
+        {"category": "network", "severity": "warn", "scope": "web",
+         "message": "no IP on eth0", "remediation": "check the bridge"},
+        {"category": "cloudinit", "severity": "info", "scope": "web",
+         "message": "cloud-init image", "remediation": None},
+        {"category": "mount", "severity": "error", "scope": "db",
+         "message": "overlay not mounted", "remediation": "start it"},
+    ],
+    "problem_count": 2,
+    "instances_scanned": 2,
+}
+
+
+# A CLEAN STOPPED instance: today's run_diagnostics enumerates ONE instance but
+# that instance emits NO INSTANCE-domain finding (only the host apparmor/vmid/hold
+# checks fire) — so instances_scanned (=1) is NOT recoverable from the findings.
+# This is the case the Editor caught: a finding-derived count would report 0. The
+# projection takes instances_scanned as a caller-supplied parameter; the caller
+# passes the SAME enumeration count run_diagnostics uses.
+_CLEAN_STOPPED_REPORT = {
+    "checks": [
+        {"category": "apparmor", "severity": "ok", "scope": "host",
+         "message": "apparmor profile generated OK", "remediation": None},
+        {"category": "vmid", "severity": "ok", "scope": "host",
+         "message": "no vmid collisions", "remediation": None},
+        {"category": "hold", "severity": "ok", "scope": "host",
+         "message": "all holds consistent", "remediation": None},
+    ],
+    "problem_count": 0,
+    "instances_scanned": 1,  # one instance enumerated, zero instance findings
+}
+
+
+def _typed_diagnosis(report: dict):
+    """Build the typed Diagnosis the library's mapper produces from a report."""
+    from kento._diagnosis import diagnosis_from_report
+
+    return diagnosis_from_report(report)
+
+
+def _wire(report: dict) -> dict:
+    """Project the typed Diagnosis back to wire, passing the REAL scan count.
+
+    The caller (Block 18) supplies instances_scanned = the enumeration count
+    run_diagnostics used; the golden report carries that count, so the test
+    passes it through exactly as the real handler will.
+    """
+    diag = _typed_diagnosis(report)
+    return proj.diagnosis_to_wire_dict(
+        diag, instances_scanned=report["instances_scanned"])
+
+
+def test_diagnose_clean_json_round_trips():
+    assert _wire(_CLEAN_REPORT) == _CLEAN_REPORT
+
+
+def test_diagnose_problems_json_round_trips():
+    assert _wire(_PROBLEM_REPORT) == _PROBLEM_REPORT
+
+
+def test_diagnose_clean_stopped_instances_scanned_is_caller_count():
+    """The Editor's BLOCKER repro + mutation guard.
+
+    A clean STOPPED instance enumerates 1 but emits NO instance-domain finding.
+    The wire MUST report instances_scanned == 1 (= len(instances)), NOT 0 (=
+    distinct INSTANCE-domain subjects in the findings). This reddens if the
+    projection ever reverts to deriving the count from findings.
+    """
+    wire = _wire(_CLEAN_STOPPED_REPORT)
+    assert wire == _CLEAN_STOPPED_REPORT
+    assert wire["instances_scanned"] == 1
+    # Prove the divergence the parameter fixes: a finding-derived count would be
+    # 0 (no INSTANCE-domain subjects), so the caller-supplied 1 is load-bearing.
+    from kento import DiagnosisDomain
+
+    diag = _typed_diagnosis(_CLEAN_STOPPED_REPORT)
+    derived = len({
+        f.subject for f in diag.findings
+        if f.domain is DiagnosisDomain.INSTANCE and f.subject is not None
+    })
+    assert derived == 0
+    assert wire["instances_scanned"] != derived
+
+
+def test_diagnose_clean_human_byte_identical():
+    diag = _typed_diagnosis(_CLEAN_REPORT)
+    golden = _diagnose_mod.format_diagnostics(_CLEAN_REPORT)
+    assert proj.diagnosis_to_human(
+        diag, instances_scanned=_CLEAN_REPORT["instances_scanned"]) == golden
+
+
+def test_diagnose_clean_stopped_human_byte_identical():
+    """The human summary header prints instances_scanned — must be the real count."""
+    diag = _typed_diagnosis(_CLEAN_STOPPED_REPORT)
+    golden = _diagnose_mod.format_diagnostics(_CLEAN_STOPPED_REPORT)
+    out = proj.diagnosis_to_human(
+        diag, instances_scanned=_CLEAN_STOPPED_REPORT["instances_scanned"])
+    assert out == golden
+    assert "(1 instance(s) scanned)" in out
+
+
+def test_diagnose_problems_human_byte_identical():
+    diag = _typed_diagnosis(_PROBLEM_REPORT)
+    golden = _diagnose_mod.format_diagnostics(_PROBLEM_REPORT)
+    assert proj.diagnosis_to_human(
+        diag, instances_scanned=_PROBLEM_REPORT["instances_scanned"]) == golden
+
+
+def test_diagnose_severity_mapping():
+    """WARNING -> warn, ERROR -> error, OK/INFO unchanged (the wire vocab)."""
+    wire = _wire(_PROBLEM_REPORT)
+    severities = {c["category"]: c["severity"] for c in wire["checks"]}
+    assert severities["network"] == "warn"
+    assert severities["mount"] == "error"
+    assert severities["cloudinit"] == "info"
+    assert severities["apparmor"] == "ok"
+
+
+def test_diagnose_problem_count_derived():
+    """problem_count = len(problems) (WARNING/ERROR), derived from findings."""
+    wire = _wire(_PROBLEM_REPORT)
+    assert wire["problem_count"] == 2
+
+
+def test_diagnose_json_string_indented():
+    """The --json string matches json.dumps(report, indent=2) exactly."""
+    import json
+
+    diag = _typed_diagnosis(_CLEAN_REPORT)
+    out = proj.diagnosis_to_json(
+        diag, instances_scanned=_CLEAN_REPORT["instances_scanned"])
+    assert out == json.dumps(_CLEAN_REPORT, indent=2)
+
+
+def test_diagnose_against_real_run_diagnostics(tmp_path):
+    """Round-trip through the GENUINE run_diagnostics, not a synthetic report.
+
+    Anchors the projection to the real wire the library emits: build an instance
+    dir, run the actual scan, map to typed via the library mapper, project back,
+    and assert the projected wire equals the real report.
+    """
+    lxc_base = tmp_path / "lxc"
+    vm_base = tmp_path / "vm"
+    _build_lxc(lxc_base, "web", image="debian:bookworm", name="web", mode="lxc",
+               **{"kento-layers": "/nonexistent\n"})
+    vm_base.mkdir()
+    from kento._diagnosis import diagnosis_from_report
+
+    with mock.patch.object(_diagnose_mod, "LXC_BASE", lxc_base, create=True), \
+         mock.patch.object(_diagnose_mod, "VM_BASE", vm_base, create=True), \
+         mock.patch.object(kento, "LXC_BASE", lxc_base), \
+         mock.patch.object(kento, "VM_BASE", vm_base):
+        report = _diagnose_mod.run_diagnostics(None)
+
+    typed = diagnosis_from_report(report)
+    # Block 18 passes the same enumeration count run_diagnostics used; here we
+    # take it straight from the real report (a named/host scan handler would
+    # compute it from the instances it enumerated).
+    wire = proj.diagnosis_to_wire_dict(
+        typed, instances_scanned=report["instances_scanned"])
+    assert wire["checks"] == report["checks"]
+    assert wire["problem_count"] == report["problem_count"]
+    assert wire["instances_scanned"] == report["instances_scanned"]
+
+
+# --------------------------------------------------------------------------- #
+# Additional byte-exactness edge cases (the brief's gotchas).
+# --------------------------------------------------------------------------- #
+
+
+def test_info_pve_vm_mode_and_vmid(tmp_path):
+    """pve-vm: mode stays 'pve-vm', type 'VM', vmid is an int in JSON."""
+    d = _build_lxc(tmp_path / "vm", "200", image="alpine:3.19", name="vmpve",
+                   mode="pve-vm", **{"kento-vmid": "200\n"})
+    golden = _info_golden(d, "vmpve", "pve-vm", as_json=True, verbose=False)
+    inst = _load(d, "pve-vm")
+    with mock.patch("kento_cli._projection.is_running", return_value=False):
+        out = proj.instance_to_json(inst, verbose=False)
+    assert out == golden
+    assert '"vmid": 200' in out
+    assert '"mode": "pve-vm"' in out
+
+
+def test_info_name_fallback_to_dir(tmp_path):
+    """No kento-name file: both info() and the projection fall back to the dir."""
+    d = tmp_path / "lxc" / "orphan-id"
+    d.mkdir(parents=True)
+    (d / "kento-image").write_text("debian:bookworm\n")
+    (d / "kento-mode").write_text("lxc\n")
+    golden = _info_golden(d, "orphan-id", "lxc", as_json=True, verbose=False)
+    inst = _load(d, "lxc")
+    with mock.patch("kento_cli._projection.is_running", return_value=False):
+        out = proj.instance_to_json(inst, verbose=False)
+    assert out == golden
+
+
+def test_info_multi_port_human_layout(tmp_path):
+    """A multi-line kento-port renders the legacy aligned Port: layout."""
+    d = _build_lxc(tmp_path / "lxc", "p", image="debian:bookworm", name="p",
+                   mode="lxc", **{"kento-port": "10022:22\n8080:80\n"})
+    golden = _info_golden(d, "p", "lxc", as_json=False, verbose=False)
+    inst = _load(d, "lxc")
+    with mock.patch("kento_cli._projection.is_running", return_value=False):
+        out = proj.instance_to_human(inst, verbose=False)
+    assert out == golden
+
+
+def test_info_created_unknown_on_mtime_oserror(tmp_path):
+    """created -> 'unknown' (not a 1969 epoch string) when the mtime probe fails.
+
+    Matches info.py: it re-probes os.path.getmtime live and emits 'unknown' on
+    OSError. The typed loader falls back to fromtimestamp(0); the projection must
+    NOT strftime that sentinel. We force the OSError on BOTH the library reader
+    and the projection so the golden and the projection compare on equal footing
+    (the dir stays present so every other field reads normally).
+    """
+    d = _build_lxc(tmp_path / "lxc", "ghost", image="debian:bookworm",
+                   name="ghost", mode="lxc")
+    inst = _load(d, "lxc")
+
+    def boom(_path):
+        raise OSError("mtime gone")
+
+    with mock.patch("kento.info.os.path.getmtime", boom):
+        golden = _info_golden(d, "ghost", "lxc", as_json=True, verbose=False)
+    with mock.patch("kento_cli._projection.is_running", return_value=False), \
+         mock.patch("kento_cli._projection.os.path.getmtime", boom):
+        out = proj.instance_to_json(inst, verbose=False)
+    assert out == golden
+    assert '"created": "unknown"' in out
+
+
+def test_info_empty_passthrough_lists_present_in_json(lxc_full):
+    """qemu_args/pve_args are always present (empty list), lxc_args populated."""
+    inst = _load(lxc_full, "lxc")
+    with mock.patch("kento_cli._projection.is_running", return_value=False):
+        wire = proj.instance_to_wire_dict(inst)
+    assert wire["qemu_args"] == []
+    assert wire["pve_args"] == []
+    assert wire["lxc_args"] == ["lxc.cap.drop = sys_admin"]
