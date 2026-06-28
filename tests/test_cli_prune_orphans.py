@@ -1,81 +1,97 @@
-"""CLI wiring for `kento prune --orphans [--yes]`.
+"""CLI wiring for `kento prune --orphans [--yes]` (Phase 6 re-point).
 
-Bare `kento prune` is unchanged (images/holds only, exercised in test_cli.py's
-TestPruneCommand). `--orphans` ADDS a separately sectioned orphan-reaping pass:
-the library does the work (kento.reconcile.reap_orphans / format_reap); the CLI
-routes args (reap=args.yes — dry-run unless --yes) and prints the section after
-the existing images/holds output.
+Bare `kento prune` reclaims podman DANGLING images via LayeredImage.prune (M22).
+`--orphans` ADDS a separately sectioned orphan-reaping pass routed onto
+Instance.prune_orphans (M4): reap=args.yes (dry-run unless --yes). Both ops
+return a typed ReclaimReport (classes-only seam — no dict crosses); the CLI
+formats the human text at the edge.
 
-The handler imports reap_orphans/format_reap from kento.reconcile, so these
-patch that name. images.prune is mocked so these tests stay hermetic and assert
-ONLY the orphan wiring.
+LayeredImage.prune is mocked so these tests stay hermetic and assert ONLY the
+orphan wiring.
 """
 from unittest.mock import patch
 
 import pytest
 
+from kento import ReclaimReport
+
 from kento_cli import main
 
 
-def _orphan_results():
-    return [{"name": "ghost", "vmid": 101, "mode": "pve",
-             "reaped": False, "error": None}]
+def _clean_image_report():
+    return ReclaimReport(dry_run=False)
+
+
+def _orphan_report(*, dry_run):
+    return ReclaimReport(dry_run=dry_run, reclaimed=("ghost",))
 
 
 class TestPruneOrphans:
 
     def test_bare_prune_does_not_touch_orphans(self):
-        """kento prune (no --orphans) must NOT call reap_orphans at all."""
+        """kento prune (no --orphans) must NOT call prune_orphans at all."""
         with patch("kento.require_root"), \
-             patch("kento.images.prune", return_value=("IMAGES-OUT", 0)), \
-             patch("kento.reconcile.reap_orphans") as reap:
+             patch("kento.LayeredImage.prune",
+                   return_value=_clean_image_report()), \
+             patch("kento.Instance.prune_orphans") as reap:
             main(["prune"])
         reap.assert_not_called()
 
     def test_bare_prune_yes_does_not_touch_orphans(self):
         with patch("kento.require_root"), \
-             patch("kento.images.prune", return_value=("IMAGES-OUT", 0)), \
-             patch("kento.reconcile.reap_orphans") as reap:
+             patch("kento.LayeredImage.prune",
+                   return_value=_clean_image_report()), \
+             patch("kento.Instance.prune_orphans") as reap:
             main(["prune", "--yes"])
         reap.assert_not_called()
 
     def test_orphans_dry_run_lists_but_does_not_reap(self, capsys):
-        """prune --orphans (no --yes) calls reap_orphans(reap=False)."""
+        """prune --orphans (no --yes) calls prune_orphans(reap=False)."""
         with patch("kento.require_root"), \
-             patch("kento.images.prune", return_value=("IMAGES-OUT", 0)), \
-             patch("kento.reconcile.reap_orphans",
-                   return_value=_orphan_results()) as reap, \
-             patch("kento.reconcile.format_reap",
-                   return_value="ORPHANS-DRY") as fmt:
+             patch("kento.LayeredImage.prune",
+                   return_value=_clean_image_report()), \
+             patch("kento.Instance.prune_orphans",
+                   return_value=_orphan_report(dry_run=True)) as reap:
             main(["prune", "--orphans"])
         reap.assert_called_once_with(reap=False)
-        fmt.assert_called_once_with(_orphan_results(), reaped=False)
         out = capsys.readouterr().out
-        # Existing images/holds output is still printed, then the orphan section.
-        assert "IMAGES-OUT" in out
-        assert "ORPHANS-DRY" in out
-        assert out.index("IMAGES-OUT") < out.index("ORPHANS-DRY")
+        # The dangling-image section prints first, then the orphan section.
+        assert "dangling image(s)" in out
+        assert "WOULD be destroyed" in out
+        assert out.index("dangling image(s)") < out.index("WOULD be destroyed")
 
     def test_orphans_yes_triggers_reap(self, capsys):
-        """prune --orphans --yes calls reap_orphans(reap=True)."""
+        """prune --orphans --yes calls prune_orphans(reap=True)."""
         with patch("kento.require_root"), \
-             patch("kento.images.prune", return_value=("IMAGES-OUT", 0)), \
-             patch("kento.reconcile.reap_orphans",
-                   return_value=_orphan_results()) as reap, \
-             patch("kento.reconcile.format_reap",
-                   return_value="ORPHANS-REAPED") as fmt:
+             patch("kento.LayeredImage.prune",
+                   return_value=_clean_image_report()), \
+             patch("kento.Instance.prune_orphans",
+                   return_value=_orphan_report(dry_run=False)) as reap:
             main(["prune", "--orphans", "--yes"])
         reap.assert_called_once_with(reap=True)
-        fmt.assert_called_once_with(_orphan_results(), reaped=True)
         out = capsys.readouterr().out
-        assert "IMAGES-OUT" in out
-        assert "ORPHANS-REAPED" in out
+        assert "reaped ghost" in out
+
+    def test_orphans_failure_exits_nonzero(self, capsys):
+        """A failed reap (ReclaimReport.failed) makes the CLI exit 1."""
+        report = ReclaimReport(
+            dry_run=False, reclaimed=(),
+            failed=(("ghost", "destroy refused"),))
+        with patch("kento.require_root"), \
+             patch("kento.LayeredImage.prune",
+                   return_value=_clean_image_report()), \
+             patch("kento.Instance.prune_orphans", return_value=report):
+            with pytest.raises(SystemExit) as exc:
+                main(["prune", "--orphans", "--yes"])
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "FAILED ghost: destroy refused" in out
 
     def test_orphans_requires_root_before_reaping(self):
         """--orphans still gates on require_root; reap never runs if it fails."""
         with patch("kento.require_root", side_effect=SystemExit(1)) as root, \
-             patch("kento.images.prune"), \
-             patch("kento.reconcile.reap_orphans") as reap:
+             patch("kento.LayeredImage.prune"), \
+             patch("kento.Instance.prune_orphans") as reap:
             with pytest.raises(SystemExit):
                 main(["prune", "--orphans"])
         root.assert_called_once()

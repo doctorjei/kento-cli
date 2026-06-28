@@ -657,38 +657,75 @@ def _dispatch(args, scope: str | None, subcmd: str) -> None:
     elif subcmd == "pull":
         _dispatch_pull(args)
     elif subcmd == "images":
+        # NOT re-pointed onto Image.list() (M21) — DISCLOSED judgment call.
+        # `kento images` reports the kento-MANAGED image accounting (which
+        # guests reference each image, whether a hold pins it, in-use vs
+        # orphaned), built from on-disk guest/hold state. Image.list() is a
+        # DIFFERENT dataset — every podman repository image as a LayeredImage,
+        # carrying source/id/layers only and NO guest/hold/status data (its own
+        # docstring states it does not wrap list_images). The managed-image
+        # accounting has no typed surface in 1.0, so a faithful, zero-feature-
+        # loss `images` table cannot be projected from the typed objects without
+        # a new kento-core surface (out of scope here — would be a STOP+disclose
+        # kento-core change). list_images() returns a STRING, not a dict, so the
+        # classes-only seam rule (which targets legacy --json DICTS) is not
+        # violated: no dict crosses. Re-pointing `images` onto a typed managed-
+        # image surface is deferred to the lifecycle-EPIC provenance work.
         from kento.images import list_images
         print(list_images(in_use_only=args.in_use))
     elif subcmd == "prune":
-        from kento import require_root
-        require_root()
-        from kento.images import prune
-        # Bare prune (images/holds) is unchanged. --orphans ADDS a separately
-        # sectioned orphan-reaping pass (heavier blast radius — discards
-        # instance state), dry-run by default and acting only under --yes,
-        # consistent with how prune treats --yes.
-        text, prune_failures = prune(yes=args.yes)
-        print(text)
+        import kento
+        from kento import PruneScope
+
+        kento.require_root()
+        # Re-pointed (Phase 6) onto the typed reclaim ops (plan §Phase 6 map,
+        # behavior-policy Q1 — surface the library's cleaner semantics as an
+        # intentional, CHANGELOG'd delta). Both ops return the shared typed
+        # ReclaimReport (M25, a frozen dataclass — classes-only seam, no dict).
+        #
+        # ** BEHAVIOR DELTA (CHANGELOG'd) ** Bare `kento prune` now reclaims
+        # podman DANGLING images (Image.prune, M22) — untagged <none> layers
+        # podman no longer references, never a held image. This REPLACES the
+        # former kento orphan-HOLD GC (removing kento-hold.<guest> containers of
+        # vanished guests + the images they freed): the hold-GC has no typed
+        # home in 1.0 (Image.prune is dangling-GC; Instance.prune_orphans is
+        # PVE-instance-orphan GC — both distinct from hold-GC). `--orphans`
+        # below is unchanged in intent.
+        # Spec §11.5 phrases M19-M23 as `Image.*`, but the abstract `Image` base
+        # is a genuine ABC; the as-built classmethods (pull/list/prune) live on
+        # the concrete `LayeredImage` (the only 1.0 OCI representation — disclosed
+        # placement, _images.py §309-316). Use it directly.
+        report = kento.LayeredImage.prune(scope=PruneScope.DANGLING)
+        print(_format_image_prune(report))
+        failed = bool(report.failed)
         if args.orphans:
-            from kento.reconcile import reap_orphans, format_reap
-            results = reap_orphans(reap=args.yes)
+            # --orphans: batch-reconcile orphaned PVE instance state (M4).
+            # reap=args.yes -> dry-run unless --yes (the ReclaimReport's dry_run
+            # mirrors that). Heavier blast radius (discards instance state), so
+            # it stays a separately sectioned, opt-in pass.
+            orphans = kento.Instance.prune_orphans(reap=args.yes)
             print()
-            print(format_reap(results, reaped=args.yes))
-        # Exit non-zero after the --orphans section prints, so both
-        # outputs show. prune only ever targets images it already
-        # determined were safe to remove, so a removal failure signals
-        # an external reference or an accounting mismatch.
-        if prune_failures:
+            print(_format_orphan_prune(orphans))
+            failed = failed or bool(orphans.failed)
+        # Exit non-zero after BOTH sections print, so all output shows. A
+        # surfaced failure (held/externally-referenced image, or a failed reap)
+        # is meaningful — mirror today's exit-1-on-failure contract.
+        if failed:
             sys.exit(1)
     elif subcmd == "diagnose":
         _dispatch_diagnose(args)
     elif subcmd == "adopt":
-        from kento import require_root
-        require_root()
-        from kento.reconcile import adopt
-        result = adopt(args.name)
-        print(f"adopted '{result['name']}' (vmid {result['vmid']}); "
-              f"run 'kento start {result['name']}'")
+        import kento
+
+        kento.require_root()
+        # M3: Instance.adopt heals the orphan and returns a typed handle (a
+        # SystemContainer / VirtualMachine). CLASSES-ONLY: the CLI formats the
+        # success line from the handle's public properties — name and the PVE
+        # vmid (platform_profile.mid; always present on an adopted PVE instance,
+        # since adopt is pve-lxc/pve-vm only and fails closed otherwise).
+        inst = kento.Instance.adopt(args.name)
+        print(f"adopted '{inst.name}' (vmid {inst.platform_profile.mid}); "
+              f"run 'kento start {inst.name}'")
 
 
 def _parse_network(network_str: str | None, mode: str | None) -> tuple[str | None, str | None]:
@@ -1608,19 +1645,97 @@ def _dispatch_diagnose(args) -> None:
     sys.exit(1 if diag.problems else 0)
 
 
+def _format_image_prune(report) -> str:
+    """Render an Image.prune ReclaimReport (M22/M25) as human text.
+
+    ``Image.prune`` always EXECUTES (the M22 signature has no ``dry_run`` — the
+    returned report is always ``dry_run=False``), so this renders an outcome
+    summary, never a dry-run plan: how many dangling images were reclaimed, with
+    any podman refusals surfaced (the 1.6.2 failure-surfacing contract) as
+    ``(image, reason)`` lines. ``report`` is a typed ``ReclaimReport`` (a frozen
+    dataclass) — classes-only across the seam, never a dict.
+    """
+    n = len(report.reclaimed)
+    lines = [f"Removed {n} dangling image(s)."]
+    if report.failed:
+        lines.append(
+            f"Failed to remove {len(report.failed)} image(s) "
+            "(held, still referenced, or accounting mismatch):"
+        )
+        for image, reason in report.failed:
+            lines.append(f"  {image}: {reason}")
+    return "\n".join(lines)
+
+
+def _format_orphan_prune(report) -> str:
+    """Render an Instance.prune_orphans ReclaimReport (M4/M25) as human text.
+
+    Unlike image prune, ``prune_orphans`` is dry-run-able: ``report.dry_run`` is
+    ``True`` when invoked without ``--yes`` (nothing destroyed — the report lists
+    what WOULD be reaped, with a ``--yes`` hint) and ``False`` after a real reap
+    (each orphan reported reaped, failures surfaced). ``report`` is a typed
+    ``ReclaimReport`` — classes-only, never a dict.
+    """
+    if report.dry_run:
+        if not report.reclaimed:
+            return "Orphans: none found."
+        lines = [
+            "Orphans:",
+            f"  Dry run — nothing destroyed. {len(report.reclaimed)} orphaned "
+            "instance(s) WOULD be destroyed (state discarded):",
+        ]
+        for name in report.reclaimed:
+            lines.append(f"    {name}")
+        lines.append("  Run 'kento prune --orphans --yes' to destroy them.")
+        return "\n".join(lines)
+
+    if not report.reclaimed and not report.failed:
+        return "Orphans: none found."
+    lines = ["Orphans:"]
+    for name in report.reclaimed:
+        lines.append(f"  reaped {name}")
+    for name, reason in report.failed:
+        lines.append(f"  FAILED {name}: {reason}")
+    n_failed = len(report.failed)
+    summary = f"Destroyed {len(report.reclaimed)} orphan(s)"
+    summary += f", {n_failed} failed." if n_failed else "."
+    lines.append(summary)
+    return "\n".join(lines)
+
+
 def _dispatch_pull(args) -> None:
-    from kento import require_root
-    require_root()
-    import subprocess
-    try:
-        result = subprocess.run(["podman", "pull", args.image])
-    except FileNotFoundError:
-        print("Error: 'podman' not found on PATH. Install podman "
-              "(apt install podman / dnf install podman) and retry.",
-              file=sys.stderr)
-        sys.exit(2)
-    if result.returncode != 0:
-        sys.exit(result.returncode)
+    """Pull an OCI image into the local store via the typed library (M19).
+
+    Re-pointed (Phase 6) from a raw ``podman pull`` subprocess onto
+    ``kento.LayeredImage.pull(ref)``, which acquires the image and returns a resolved
+    typed handle. CLASSES-ONLY across the seam: the library hands back an
+    ``Image`` (a ``LayeredImage``); the CLI keeps only its rendered ``source``
+    for the success line and discards the rest.
+
+    Behavior deltas vs the old raw subprocess (CHANGELOG'd):
+
+    * **Progress display.** ``Image.pull`` runs podman with captured output
+      (M19 has no progress callback — deferred post-1.0, spec §11.7), so the
+      live layer-pull progress the raw subprocess streamed is no longer shown;
+      a one-line confirmation prints on success instead. Failure output is
+      surfaced in the raised ``SubprocessError`` message.
+    * **Ref validation.** A malformed reference now raises ``MalformedReference``
+      (mapped by ``_handle`` to "Error: ..." + exit 1) BEFORE any podman call,
+      instead of being handed to the shell.
+
+    Exit codes are preserved by the outer ``_handle`` wrapper: podman absent
+    (``SubprocessError`` with ``returncode=None``) -> exit 2; any other pull
+    failure -> exit 1. (The old handler special-cased podman-absent to exit 2
+    with its own message; ``_exit_code`` reproduces the 2, the library supplies
+    the message.)
+    """
+    import kento
+
+    kento.require_root()
+    # Spec §11.5 phrases this `Image.pull`; the as-built classmethod lives on the
+    # concrete `LayeredImage` (Image is a genuine ABC — _images.py §309-316).
+    image = kento.LayeredImage.pull(args.image)
+    print(f"Pulled {image.source.render()}")
 
 
 if __name__ == "__main__":

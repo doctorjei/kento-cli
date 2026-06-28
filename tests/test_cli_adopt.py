@@ -1,13 +1,13 @@
-"""CLI wiring for `kento adopt NAME`.
+"""CLI wiring for `kento adopt NAME` (Phase 6 re-point).
 
-The library does the work (kento.reconcile.adopt regenerates the missing PVE
-config from surviving state); the CLI gates on require_root, calls adopt(name),
-and prints a success line from the returned {"name","vmid","mode"} dict. A
-KentoError from the library surfaces through the shared _handle path.
-
-The handler imports adopt from kento.reconcile, so these patch that name.
+Re-pointed onto Instance.adopt (M3): the library heals the orphan (regenerates
+the missing PVE config from surviving state) and returns a typed Instance
+handle. CLASSES-ONLY: the CLI gates on require_root, calls Instance.adopt(name),
+and formats the success line from the handle's public properties — name and the
+PVE vmid (platform_profile.mid). A KentoError from the library surfaces through
+the shared _handle path.
 """
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -16,12 +16,19 @@ from kento.errors import StateError
 from kento_cli import main
 
 
+def _fake_handle(name="ghost", mid=101):
+    inst = MagicMock()
+    inst.name = name
+    inst.platform_profile.mid = mid
+    return inst
+
+
 class TestAdopt:
 
     def test_adopt_calls_library_with_name_and_prints_success(self, capsys):
-        result = {"name": "ghost", "vmid": 101, "mode": "pve"}
+        handle = _fake_handle()
         with patch("kento.require_root"), \
-             patch("kento.reconcile.adopt", return_value=result) as adopt:
+             patch("kento.Instance.adopt", return_value=handle) as adopt:
             main(["adopt", "ghost"])
         adopt.assert_called_once_with("ghost")
         out = capsys.readouterr().out
@@ -31,7 +38,7 @@ class TestAdopt:
     def test_adopt_requires_root_before_library_call(self):
         """require_root gates first; adopt never runs if it fails."""
         with patch("kento.require_root", side_effect=SystemExit(1)) as root, \
-             patch("kento.reconcile.adopt") as adopt:
+             patch("kento.Instance.adopt") as adopt:
             with pytest.raises(SystemExit):
                 main(["adopt", "ghost"])
         root.assert_called_once()
@@ -40,7 +47,7 @@ class TestAdopt:
     def test_adopt_library_error_surfaces_via_handle(self, capsys):
         """A KentoError (e.g. not an orphan) becomes 'Error: ...' + exit 1."""
         with patch("kento.require_root"), \
-             patch("kento.reconcile.adopt",
+             patch("kento.Instance.adopt",
                    side_effect=StateError("instance 'ghost' is not an orphan")):
             with pytest.raises(SystemExit) as exc:
                 main(["adopt", "ghost"])

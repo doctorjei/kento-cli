@@ -61,6 +61,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host; pass `--vmid N` to force PVE at a specific id. (`--no-pve` still forces
   non-PVE.) This follows from the typed create's `PlatformProfile` being an
   identity value that requires a concrete vmid.
+- **`pull` now runs through the typed `kento-core` `Image.pull`** (M19). Two
+  user-visible deltas: (1) **pull progress is no longer streamed live** — the
+  typed pull runs podman with captured output (M19 has no progress callback;
+  progress reporting is deferred post-1.0), so instead of the live layer-pull
+  progress bars, `kento pull` now prints a single `Pulled <ref>` line on success
+  and surfaces podman's output in the error message on failure; (2) a malformed
+  image reference is now rejected up front with a clear error (exit 1) before any
+  podman call, rather than being handed to the shell. Podman-absent still exits 2.
+- **`adopt` now runs through the typed `kento-core` `Instance.adopt`** (M3). The
+  success line (`adopted '<name>' (vmid <N>); run 'kento start <name>'`) is
+  unchanged; it is now rendered from the returned typed instance handle.
+- **`prune` is re-pointed onto the typed reclaim API, changing what bare `prune`
+  removes.** Bare `kento prune` now reclaims podman **dangling images** (untagged
+  `<none>` layers podman no longer references; never a held image) via the typed
+  `Image.prune` (M22), returning a typed `ReclaimReport`. This **replaces** the
+  former behavior, where bare `prune` removed orphaned kento *hold* containers
+  (`kento-hold.<guest>` of vanished guests) and the images they freed. `kento
+  prune --orphans [--yes]` is re-pointed onto the typed `Instance.prune_orphans`
+  (M4) and is unchanged in intent (discard orphaned PVE *instance* state; dry-run
+  unless `--yes`). Both sections still print before a non-zero exit on any
+  surfaced failure. *Note:* the orphan-instance dry-run/summary lines no longer
+  show the per-orphan `(vmid, mode)` detail, since the typed `ReclaimReport`
+  carries targets as plain name strings.
 
 ## [1.6.3] - 2026-06-28
 
