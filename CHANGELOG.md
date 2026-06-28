@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.3] - 2026-06-28
+
+> Sibling-synced with **kento-core 1.6.0.dev4** (re-pinned dependency). The core
+> dev release also lands the additive typed public-API surface (Phases 1–2),
+> which the CLI does not yet consume — this CLI patch ships only the clamp.
+
 ### Changed
 
 - **`kento vm create --cores` / `kento set --cores` clamp to node CPU count.**
