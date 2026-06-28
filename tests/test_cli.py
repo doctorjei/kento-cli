@@ -670,21 +670,22 @@ class TestDispatchScope:
     M5/M6/M7/M8 method calls. They patch the typed lifecycle method on the
     resolved class and assert it is invoked on the instance the scope resolves to.
 
-    SCOPED DUPLICATE-NAME DISAMBIGUATION (T3) — DISCLOSED REGRESSION: the typed
-    M1 ``get`` takes no namespace param and scans both namespaces, so a name that
-    exists in BOTH (a ``create --force`` duplicate) raises "ambiguous" even under
-    an explicit ``kento vm``/``kento lxc`` scope, instead of resolving the scoped
-    kind. See ``test_scoped_dup_name_is_currently_ambiguous`` — this is escalated
-    to the director as a likely core narrowing bug (subclass ``get`` should narrow
-    within its namespace); it is NOT fixed here (no silent core edits).
+    SCOPED DUPLICATE-NAME DISAMBIGUATION (T3): a name that exists in BOTH
+    namespaces (a ``create --force`` duplicate) resolves the SCOPED kind under an
+    explicit ``kento vm``/``kento lxc`` scope, while the BARE command still errors
+    "ambiguous" (the user must pick a scope). Preserved by the director-ruled
+    kento-core fix that makes subclass ``get`` narrow within its own namespace;
+    see ``test_scoped_dup_name_resolves_scoped_kind`` +
+    ``test_bare_start_errors_on_ambiguous_name``.
     """
 
     def test_vm_scope_starts_vm_not_lxc(self, tmp_path):
-        """kento vm start X starts the VM (single-namespace name)."""
+        """kento vm start X starts the VM even when an LXC of the same name exists
+        (T3: scoped narrowing on a cross-namespace duplicate name)."""
         lxc_base = tmp_path / "lxc"
         vm_base = tmp_path / "vm"
+        _make_container(lxc_base, "mybox", "mybox", "lxc")
         vm_dir = _make_container(vm_base, "mybox", "mybox", "vm")
-        lxc_base.mkdir(parents=True, exist_ok=True)
 
         with patch("kento.LXC_BASE", lxc_base), \
              patch("kento.VM_BASE", vm_base), \
@@ -698,11 +699,12 @@ class TestDispatchScope:
         assert inst.name == "mybox" and inst._dir == vm_dir
 
     def test_lxc_scope_starts_lxc_not_vm(self, tmp_path):
-        """kento lxc start X starts the LXC container (single-namespace name)."""
+        """kento lxc start X starts the LXC container even when a VM of the same
+        name exists (T3: scoped narrowing on a cross-namespace duplicate)."""
         lxc_base = tmp_path / "lxc"
         vm_base = tmp_path / "vm"
         lxc_dir = _make_container(lxc_base, "mybox", "mybox", "lxc")
-        vm_base.mkdir(parents=True, exist_ok=True)
+        _make_container(vm_base, "mybox", "mybox", "vm")
 
         with patch("kento.LXC_BASE", lxc_base), \
              patch("kento.VM_BASE", vm_base), \
@@ -716,7 +718,8 @@ class TestDispatchScope:
         assert inst.name == "mybox" and inst._dir == lxc_dir
 
     def test_bare_start_errors_on_ambiguous_name(self, tmp_path):
-        """kento start X (bare) errors when name exists in both namespaces."""
+        """kento start X (bare) still errors when name exists in both namespaces
+        (the bare command needs an explicit scope — base get is unchanged)."""
         lxc_base = tmp_path / "lxc"
         vm_base = tmp_path / "vm"
         _make_container(lxc_base, "mybox", "mybox", "lxc")
@@ -728,24 +731,26 @@ class TestDispatchScope:
                 main(["start", "mybox"])
             assert exc.value.code == 1
 
-    def test_scoped_dup_name_is_currently_ambiguous(self, tmp_path):
-        """DISCLOSED REGRESSION: a scoped command on a dup name (both namespaces)
-        now exits 1 ("ambiguous") rather than resolving the scoped kind, because
-        the typed M1 get() takes no namespace param. Escalated to the director as
-        a likely core narrowing bug. Pinned here so the behavior is visible and a
-        future core fix flips this assertion deliberately."""
+    def test_scoped_dup_name_resolves_scoped_kind(self, tmp_path):
+        """T3 (FIXED): a scoped command on a duplicate name (both namespaces)
+        resolves the SCOPED kind, not 'ambiguous'. Restored by the director-ruled
+        kento-core subclass-get narrowing fix; this asserts both directions."""
         lxc_base = tmp_path / "lxc"
         vm_base = tmp_path / "vm"
-        _make_container(lxc_base, "mybox", "mybox", "lxc")
-        _make_container(vm_base, "mybox", "mybox", "vm")
+        lxc_dir = _make_container(lxc_base, "mybox", "mybox", "lxc")
+        vm_dir = _make_container(vm_base, "mybox", "mybox", "vm")
 
         with patch("kento.LXC_BASE", lxc_base), \
              patch("kento.VM_BASE", vm_base), \
-             patch("kento.VirtualMachine.start", autospec=True) as mock_start:
-            with pytest.raises(SystemExit) as exc:
-                main(["vm", "start", "mybox"])
-        assert exc.value.code == 1
-        mock_start.assert_not_called()
+             patch("kento.VirtualMachine.destroy", autospec=True) as mock_vm, \
+             patch("kento.SystemContainer.destroy", autospec=True) as mock_lxc:
+            main(["vm", "destroy", "--force", "mybox"])
+            main(["lxc", "destroy", "--force", "mybox"])
+
+        assert mock_vm.call_count == 1
+        assert mock_vm.call_args[0][0]._dir == vm_dir
+        assert mock_lxc.call_count == 1
+        assert mock_lxc.call_args[0][0]._dir == lxc_dir
 
     def test_vm_scope_shutdown(self, tmp_path):
         """kento vm shutdown X calls VirtualMachine.stop (graceful, force=False)."""
