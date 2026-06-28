@@ -145,14 +145,16 @@ class TestBridgeExistence:
         assert "does not exist" in err
 
     def test_existing_bridge_accepted(self):
-        """Monkeypatched _bridge_exists=True passes through to create()."""
-        mock_create = MagicMock()
-        with patch("kento.create.create", mock_create), \
+        """Monkeypatched _bridge_exists=True -> the bridge lands in the typed
+        NetworkConnection's link_config (Phase-6 typed create)."""
+        with patch("kento.SystemContainer.create") as msc, \
+             patch("kento.VirtualMachine.create") as mvm, \
              patch("kento._bridge_exists", return_value=True):
             main(["lxc", "create", "--network", "bridge=fakebr0",
                   "--name", "x", "debian:13"])
-        mock_create.assert_called_once()
-        assert mock_create.call_args[1]["bridge"] == "fakebr0"
+        msc.assert_called_once()
+        assert not mvm.called
+        assert msc.call_args.kwargs["network"].link_config["bridge"] == "fakebr0"
 
 
 # ---- CLI-level rejection (argparse wires validators correctly) ---------------

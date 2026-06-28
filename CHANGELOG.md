@@ -38,6 +38,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pass-through (`-f`, `-n 50`, `--since ...`, `-u sshd`, ...) is preserved
   byte-for-byte; `kento logs NAME <any journalctl args>` works exactly as before.
   (`exec` is unchanged: it still returns the in-guest command's exit code.)
+- **`set` now runs through the typed `kento-core` property API** (M9 mutable
+  properties): `--memory`/`--cores` (resources), `--hostname`, `--network` /
+  `--ip` / `--gateway` / `--dns` / `--mac` (network), `--port` (forwards),
+  `--lxc-arg` / `--qemu-arg` / `--pve-arg` (pass-throughs). Only the flags you
+  pass are changed; the rest are left untouched, exactly as before. Settable-on-
+  stopped-only fields still raise a clear error (exit 1) on a running instance.
+- **`create` / `run` now run through the typed `kento-core`
+  `SystemContainer.create` / `VirtualMachine.create`** (M15/M16). All existing
+  flags are preserved (network, resources, env, ports, ssh-*, timezone,
+  searchdomain, config-mode, pass-throughs, force, …); the CLI builds the typed
+  objects (`NetworkConnection`, the port-forward map, the resources/environment
+  bags) and passes them to the typed create. No user-visible behavior change
+  except the disclosed `--pve` nuance below.
+- **`create --port` is now repeatable** (Phase-5 CLI delta). Pass `--port`
+  multiple times to declare several forwards in one create
+  (`kento lxc create --port 10022:22 --port 8080:80 IMAGE`); a single `--port`
+  works exactly as before. (`set --port` was already repeatable.)
+- **`--pve` without `--vmid` now relies on PVE auto-detection** (minor, disclosed).
+  `kento <lxc|vm> create --pve` with no `--vmid` resolves PVE by auto-detection
+  (identical behavior on a PVE host) rather than hard-forcing PVE independently of
+  the host; pass `--vmid N` to force PVE at a specific id. (`--no-pve` still forces
+  non-PVE.) This follows from the typed create's `PlatformProfile` being an
+  identity value that requires a concrete vmid.
 
 ## [1.6.3] - 2026-06-28
 
