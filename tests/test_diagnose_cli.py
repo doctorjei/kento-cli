@@ -1,24 +1,39 @@
-"""CLI wiring for the `kento diagnose [NAME] [--json]` verb.
+"""CLI wiring for `kento diagnose [NAME] [--json]`, re-pointed (Block 18).
 
-The library does the work (kento.diagnose.run_diagnostics / format_diagnostics);
-the CLI just routes args, prints, and maps problem_count -> exit code:
-  problem_count > 0 -> exit 1, else exit 0.
-A name that doesn't resolve raises InstanceNotFoundError (a KentoError) which
-the shared _handle path turns into "Error: ..." on stderr + exit 1.
+Phase 6: the handler no longer calls `kento.diagnose.run_diagnostics` +
+`format_diagnostics` directly. It now:
+  * NO name (host-wide): calls the module-level `kento.diagnose()` FUNCTION (the
+    shadow-safe entry point — NOT the submodule) -> a typed `Diagnosis`, and
+    supplies `instances_scanned = len(Instance.list())`.
+  * a NAME: reaches the `kento.diagnose` SUBMODULE's `run_diagnostics(name)`
+    (no typed byte-faithful path exists — the named wire is host+instance checks
+    unfiltered), maps it via the library mapper, and supplies
+    `instances_scanned = 1`.
+Then prints the Block-17 projection (`diagnosis_to_json` / `diagnosis_to_human`)
+and exits `1 if diag.problems else 0`. An unresolved name raises
+InstanceNotFoundError -> the shared _handle turns it into "Error: ..." + exit 1.
+
+These tests assert the WIRING (which entry point, the count, the json-vs-human
+branch, the exit code, error mapping). The byte-identical wire produced by the
+projection is pinned by test_projection_golden.py.
 """
+import importlib
 import json
 
 import pytest
 
-import kento.diagnose as kdiag
-
+import kento
 import kento_cli as cli
+from kento_cli import _projection  # noqa: F401  (register cli._projection)
+
+_diagnose_mod = importlib.import_module("kento.diagnose")
 
 
+# A clean and a problem report in the run_diagnostics wire shape.
 def _clean_report():
     return {"checks": [
-        {"category": "host", "severity": "ok", "scope": "host",
-         "message": "all good", "remediation": ""},
+        {"category": "apparmor", "severity": "ok", "scope": "host",
+         "message": "all good", "remediation": None},
     ], "problem_count": 0, "instances_scanned": 2}
 
 
@@ -29,83 +44,95 @@ def _problem_report():
     ], "problem_count": 1, "instances_scanned": 2}
 
 
-def test_diagnose_clean_prints_formatted_and_exits_0(capsys, monkeypatch):
-    monkeypatch.setattr(kdiag, "run_diagnostics", lambda name=None: _clean_report())
-    monkeypatch.setattr(kdiag, "format_diagnostics", lambda r: "FORMATTED-CLEAN")
+def _typed(report):
+    from kento._diagnosis import diagnosis_from_report
+    return diagnosis_from_report(report)
+
+
+# --------------------------------------------------------------------------- #
+# Host-wide scan (no name) -> kento.diagnose() the FUNCTION.
+# --------------------------------------------------------------------------- #
+
+
+def test_diagnose_no_name_uses_module_function(capsys, monkeypatch):
+    """No name -> the module-level kento.diagnose() fn; instances_scanned from
+    len(Instance.list()); human output; exit 0 (clean)."""
+    called = {}
+
+    def fake_diagnose():
+        called["fn"] = True
+        return _typed(_clean_report())
+
+    monkeypatch.setattr(kento, "diagnose", fake_diagnose)
+    monkeypatch.setattr(kento.Instance, "list",
+                        classmethod(lambda cls: [object(), object()]))
+    monkeypatch.setattr(cli._projection, "diagnosis_to_human",
+                        lambda diag, *, instances_scanned: f"H:{instances_scanned}")
     with pytest.raises(SystemExit) as exc:
         cli.main(["diagnose"])
     assert exc.value.code == 0
-    assert capsys.readouterr().out.strip() == "FORMATTED-CLEAN"
+    assert called["fn"] is True
+    assert capsys.readouterr().out.strip() == "H:2"
 
 
-def test_diagnose_problems_exit_1(capsys, monkeypatch):
-    monkeypatch.setattr(kdiag, "run_diagnostics", lambda name=None: _problem_report())
-    monkeypatch.setattr(kdiag, "format_diagnostics", lambda r: "FORMATTED-PROBLEMS")
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["diagnose"])
-    assert exc.value.code == 1
-    assert capsys.readouterr().out.strip() == "FORMATTED-PROBLEMS"
-
-
-def test_diagnose_json_outputs_report_dict(capsys, monkeypatch):
-    report = _clean_report()
-    monkeypatch.setattr(kdiag, "run_diagnostics", lambda name=None: report)
-    # format_diagnostics must NOT be used on the --json path
-    monkeypatch.setattr(kdiag, "format_diagnostics",
-                        lambda r: pytest.fail("format_diagnostics called on --json path"))
+def test_diagnose_no_name_json_branch_and_exit_1(capsys, monkeypatch):
+    """No name + --json + problems -> json projection + exit 1."""
+    monkeypatch.setattr(kento, "diagnose",
+                        lambda: _typed(_problem_report()))
+    monkeypatch.setattr(kento.Instance, "list",
+                        classmethod(lambda cls: [object(), object()]))
+    monkeypatch.setattr(cli._projection, "diagnosis_to_human",
+                        lambda *a, **k: pytest.fail("human path used on --json"))
     with pytest.raises(SystemExit) as exc:
         cli.main(["diagnose", "--json"])
-    assert exc.value.code == 0
+    assert exc.value.code == 1
     parsed = json.loads(capsys.readouterr().out)
-    assert parsed == report
+    assert parsed["problem_count"] == 1
+    assert parsed["instances_scanned"] == 2
 
 
-def test_diagnose_json_problem_count_exit_1(capsys, monkeypatch):
-    report = _problem_report()
-    monkeypatch.setattr(kdiag, "run_diagnostics", lambda name=None: report)
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["diagnose", "--json"])
-    assert exc.value.code == 1
-    assert json.loads(capsys.readouterr().out) == report
+# --------------------------------------------------------------------------- #
+# Named scan -> the SUBMODULE run_diagnostics(name), instances_scanned == 1.
+# --------------------------------------------------------------------------- #
 
 
-def test_diagnose_name_passed_to_run_diagnostics(capsys, monkeypatch):
+def test_diagnose_name_uses_submodule_with_count_1(capsys, monkeypatch):
     seen = {}
 
-    def fake(name=None):
+    def fake_run(name=None):
         seen["name"] = name
         return _clean_report()
 
-    monkeypatch.setattr(kdiag, "run_diagnostics", fake)
-    monkeypatch.setattr(kdiag, "format_diagnostics", lambda r: "x")
+    monkeypatch.setattr(_diagnose_mod, "run_diagnostics", fake_run)
+    # The module-level fn must NOT be used on the named path.
+    monkeypatch.setattr(kento, "diagnose",
+                        lambda: pytest.fail("module fn used on named path"))
+    monkeypatch.setattr(cli._projection, "diagnosis_to_human",
+                        lambda diag, *, instances_scanned: f"N:{instances_scanned}")
     with pytest.raises(SystemExit) as exc:
         cli.main(["diagnose", "somename"])
     assert exc.value.code == 0
     assert seen["name"] == "somename"
+    assert capsys.readouterr().out.strip() == "N:1"
 
 
-def test_diagnose_no_name_passes_none(capsys, monkeypatch):
-    seen = {}
-
-    def fake(name=None):
-        seen["name"] = name
-        return _clean_report()
-
-    monkeypatch.setattr(kdiag, "run_diagnostics", fake)
-    monkeypatch.setattr(kdiag, "format_diagnostics", lambda r: "x")
+def test_diagnose_name_problems_exit_1(capsys, monkeypatch):
+    monkeypatch.setattr(_diagnose_mod, "run_diagnostics",
+                        lambda name=None: _problem_report())
+    monkeypatch.setattr(cli._projection, "diagnosis_to_human",
+                        lambda diag, *, instances_scanned: "x")
     with pytest.raises(SystemExit) as exc:
-        cli.main(["diagnose"])
-    assert exc.value.code == 0
-    assert seen["name"] is None
+        cli.main(["diagnose", "somename"])
+    assert exc.value.code == 1
 
 
 def test_diagnose_unknown_name_errors_exit_1(capsys, monkeypatch):
     from kento import InstanceNotFoundError
 
     def boom(name=None):
-        raise InstanceNotFoundError("no such instance: ghost")
+        raise InstanceNotFoundError("no instance named 'ghost'.")
 
-    monkeypatch.setattr(kdiag, "run_diagnostics", boom)
+    monkeypatch.setattr(_diagnose_mod, "run_diagnostics", boom)
     with pytest.raises(SystemExit) as exc:
         cli.main(["diagnose", "ghost"])
     assert exc.value.code == 1
@@ -114,11 +141,38 @@ def test_diagnose_unknown_name_errors_exit_1(capsys, monkeypatch):
     assert "ghost" in err
 
 
+# --------------------------------------------------------------------------- #
+# Wire fidelity end-to-end (real projection, real mapper).
+# --------------------------------------------------------------------------- #
+
+
+def test_diagnose_no_name_json_byte_identical_to_legacy(capsys, monkeypatch):
+    """The re-pointed --json host scan equals json.dumps(report, indent=2) for
+    the report run_diagnostics(None) would have returned (instances_scanned from
+    len(Instance.list()) == the report's count)."""
+    report = _problem_report()  # instances_scanned == 2
+    monkeypatch.setattr(_diagnose_mod, "run_diagnostics",
+                        lambda name=None: report)
+    # kento.diagnose() runs the real submodule call internally; with run_diagnostics
+    # stubbed it sees `report`. Instance.list() must agree on the count (2).
+    monkeypatch.setattr(kento.Instance, "list",
+                        classmethod(lambda cls: [object(), object()]))
+    with pytest.raises(SystemExit):
+        cli.main(["diagnose", "--json"])
+    out = capsys.readouterr().out
+    assert json.loads(out) == report
+    assert out == json.dumps(report, indent=2) + "\n"
+
+
+# --------------------------------------------------------------------------- #
+# Registration / help (unchanged from before the re-point).
+# --------------------------------------------------------------------------- #
+
+
 def test_diagnose_is_top_level_only(capsys):
     """diagnose must NOT be a subcommand of lxc or vm."""
     with pytest.raises(SystemExit) as exc:
         cli.main(["lxc", "diagnose"])
-    # argparse rejects the unknown subcommand with exit code 2
     assert exc.value.code == 2
 
     with pytest.raises(SystemExit) as exc:

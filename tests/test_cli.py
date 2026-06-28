@@ -6,6 +6,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from kento_cli import main, _parse_network
+from kento_cli import _projection  # noqa: F401  (register cli._projection)
 
 
 def test_help(capsys):
@@ -289,67 +290,99 @@ class TestVmCommands:
 
 
 class TestListSizeFlag:
-    """--size / -s opt-in for the UPPER SIZE column (v1.2.1 perf fix)."""
+    """--size / -s opt-in for the UPPER SIZE column (v1.2.1 perf fix).
+
+    Re-pointed (Block 18): `list` now enumerates via the typed `Instance.list()`
+    (scope -> base/SystemContainer/VirtualMachine) and renders via the Block-17
+    projection (`instances_to_human` / `instances_to_json`). These tests assert
+    the FLAG THREADING — that the right scope->class is enumerated and that
+    `show_size` / the human-vs-json branch reach the projection unchanged. The
+    BYTE-IDENTICAL wire is pinned by test_projection_golden.py +
+    test_cli_list_dispatch.py.
+    """
+
+    def _list_threading(self, argv, *, expect_cls, expect_show_size,
+                        expect_json):
+        """Run `main(argv)` with the typed list + projection stubbed; return
+        (class .list() was called on, show_size, used_json)."""
+        seen = {}
+
+        def fake_list(cls):
+            seen["cls"] = cls
+            return []
+
+        def fake_human(insts, *, show_size=False):
+            seen["show_size"] = show_size
+            seen["json"] = False
+            return ""
+
+        def fake_json(insts, *, show_size=False):
+            seen["show_size"] = show_size
+            seen["json"] = True
+            return ""
+
+        with patch("kento.Instance.list", classmethod(fake_list)), \
+             patch("kento.SystemContainer.list", classmethod(fake_list)), \
+             patch("kento.VirtualMachine.list", classmethod(fake_list)), \
+             patch("kento_cli._projection.instances_to_human", fake_human), \
+             patch("kento_cli._projection.instances_to_json", fake_json):
+            main(argv)
+        assert seen["cls"] is expect_cls
+        assert seen["show_size"] is expect_show_size
+        assert seen["json"] is expect_json
 
     def test_bare_list_default_passes_show_size_false(self):
-        with patch("kento.list.list_containers") as mock_lc:
-            main(["list"])
-        mock_lc.assert_called_once_with(scope=None, show_size=False,
-                                        as_json=False)
+        from kento import Instance
+        self._list_threading(["list"], expect_cls=Instance,
+                             expect_show_size=False, expect_json=False)
 
     def test_bare_list_with_size_long(self):
-        with patch("kento.list.list_containers") as mock_lc:
-            main(["list", "--size"])
-        mock_lc.assert_called_once_with(scope=None, show_size=True,
-                                        as_json=False)
+        from kento import Instance
+        self._list_threading(["list", "--size"], expect_cls=Instance,
+                             expect_show_size=True, expect_json=False)
 
     def test_bare_list_with_size_short(self):
-        with patch("kento.list.list_containers") as mock_lc:
-            main(["list", "-s"])
-        mock_lc.assert_called_once_with(scope=None, show_size=True,
-                                        as_json=False)
+        from kento import Instance
+        self._list_threading(["list", "-s"], expect_cls=Instance,
+                             expect_show_size=True, expect_json=False)
 
     def test_bare_ls_with_size(self):
-        with patch("kento.list.list_containers") as mock_lc:
-            main(["ls", "--size"])
-        mock_lc.assert_called_once_with(scope=None, show_size=True,
-                                        as_json=False)
+        from kento import Instance
+        self._list_threading(["ls", "--size"], expect_cls=Instance,
+                             expect_show_size=True, expect_json=False)
 
     def test_lxc_list_default_show_size_false(self):
-        with patch("kento.list.list_containers") as mock_lc:
-            main(["lxc", "list"])
-        mock_lc.assert_called_once_with(scope="lxc", show_size=False,
-                                        as_json=False)
+        from kento import SystemContainer
+        self._list_threading(["lxc", "list"], expect_cls=SystemContainer,
+                             expect_show_size=False, expect_json=False)
 
     def test_lxc_list_with_size(self):
-        with patch("kento.list.list_containers") as mock_lc:
-            main(["lxc", "list", "--size"])
-        mock_lc.assert_called_once_with(scope="lxc", show_size=True,
-                                        as_json=False)
+        from kento import SystemContainer
+        self._list_threading(["lxc", "list", "--size"],
+                             expect_cls=SystemContainer,
+                             expect_show_size=True, expect_json=False)
 
     def test_vm_list_with_size(self):
-        with patch("kento.list.list_containers") as mock_lc:
-            main(["vm", "list", "-s"])
-        mock_lc.assert_called_once_with(scope="vm", show_size=True,
-                                        as_json=False)
+        from kento import VirtualMachine
+        self._list_threading(["vm", "list", "-s"], expect_cls=VirtualMachine,
+                             expect_show_size=True, expect_json=False)
 
     def test_bare_list_json_flag(self):
-        with patch("kento.list.list_containers") as mock_lc:
-            main(["list", "--json"])
-        mock_lc.assert_called_once_with(scope=None, show_size=False,
-                                        as_json=True)
+        from kento import Instance
+        self._list_threading(["list", "--json"], expect_cls=Instance,
+                             expect_show_size=False, expect_json=True)
 
     def test_lxc_list_json_flag(self):
-        with patch("kento.list.list_containers") as mock_lc:
-            main(["lxc", "list", "--json"])
-        mock_lc.assert_called_once_with(scope="lxc", show_size=False,
-                                        as_json=True)
+        from kento import SystemContainer
+        self._list_threading(["lxc", "list", "--json"],
+                             expect_cls=SystemContainer,
+                             expect_show_size=False, expect_json=True)
 
     def test_vm_list_json_flag(self):
-        with patch("kento.list.list_containers") as mock_lc:
-            main(["vm", "list", "--json"])
-        mock_lc.assert_called_once_with(scope="vm", show_size=False,
-                                        as_json=True)
+        from kento import VirtualMachine
+        self._list_threading(["vm", "list", "--json"],
+                             expect_cls=VirtualMachine,
+                             expect_show_size=False, expect_json=True)
 
     def test_bare_list_help_mentions_size(self, capsys):
         with pytest.raises(SystemExit) as exc:

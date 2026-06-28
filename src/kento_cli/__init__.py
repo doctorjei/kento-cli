@@ -679,17 +679,7 @@ def _dispatch(args, scope: str | None, subcmd: str) -> None:
         if prune_failures:
             sys.exit(1)
     elif subcmd == "diagnose":
-        import json
-        from kento.diagnose import run_diagnostics, format_diagnostics
-        # diagnose degrades without root (the library handles it); do NOT
-        # require_root() here. getattr guards against the top-level positional
-        # `name` being absent / collapsed to "" by the argparse layer.
-        report = run_diagnostics(getattr(args, "name", None) or None)
-        if args.as_json:
-            print(json.dumps(report, indent=2))
-        else:
-            print(format_diagnostics(report))
-        sys.exit(1 if report["problem_count"] else 0)
+        _dispatch_diagnose(args)
     elif subcmd == "adopt":
         from kento import require_root
         require_root()
@@ -908,21 +898,43 @@ def _dispatch_info(args, scope: str | None) -> None:
     validate_name(args.name)
     require_root()
 
-    if scope is None:
-        from kento import resolve_any
-        container_dir, mode = resolve_any(args.name)
-    elif scope == "lxc":
-        from kento import read_mode, resolve_in_namespace
-        container_dir = resolve_in_namespace(args.name, "lxc")
-        mode = read_mode(container_dir)
-    else:  # scope == "vm"
-        from kento import read_mode, resolve_in_namespace
-        container_dir = resolve_in_namespace(args.name, "vm")
-        mode = read_mode(container_dir, "vm")
+    # Resolve to a typed Instance via the M1 entry point, narrowed by scope:
+    # `kento info`     -> the base Instance (both namespaces, any kind);
+    # `kento lxc info` -> SystemContainer (the LXC kind);
+    # `kento vm  info` -> VirtualMachine  (the VM kind).
+    # A miss / kind mismatch raises InstanceNotFoundError, which the outer
+    # _handle wrapper turns into "Error: ..." + exit 1 — preserving today's
+    # missing-instance contract. (Disclosed: a SCOPED lookup of a name that is
+    # the *other* kind now raises the typed kind-mismatch message rather than the
+    # legacy "no <ns> named ..." string; no test pinned that text and the
+    # exit code is unchanged.)
+    inst = _resolve_instance(args.name, scope)
 
-    from kento.info import info
-    print(info(args.name, container_dir=container_dir, mode=mode,
-               as_json=args.as_json, verbose=args.verbose))
+    # Project the typed snapshot back to TODAY's exact wire via the Block-17
+    # projection (the library no longer builds the strings — §11.8 D1).
+    from kento_cli import _projection
+    if args.as_json:
+        print(_projection.instance_to_json(inst, verbose=args.verbose))
+    else:
+        print(_projection.instance_to_human(inst, verbose=args.verbose))
+
+
+def _resolve_instance(name: str, scope: str | None):
+    """Resolve ``name`` to its typed Instance handle, narrowed by ``scope``.
+
+    ``scope`` maps to the polymorphic ``get`` entry point (§10.1): ``None`` ->
+    the base ``Instance`` (both namespaces), ``"lxc"`` -> ``SystemContainer``,
+    ``"vm"`` -> ``VirtualMachine``. Raises ``InstanceNotFoundError`` on a miss or
+    a kind mismatch.
+    """
+    if scope == "lxc":
+        from kento import SystemContainer
+        return SystemContainer.get(name)
+    if scope == "vm":
+        from kento import VirtualMachine
+        return VirtualMachine.get(name)
+    from kento import Instance
+    return Instance.get(name)
 
 
 def _dispatch_attach(args, scope: str | None) -> None:
@@ -983,10 +995,101 @@ def _dispatch_logs(args, scope: str | None) -> None:
 
 
 def _dispatch_list(args, scope: str | None) -> None:
-    from kento.list import list_containers
-    print(list_containers(scope=scope,
-                          show_size=getattr(args, "show_size", False),
-                          as_json=getattr(args, "as_json", False)))
+    # Enumerate via the M2 entry point, narrowed by scope (same scope->class
+    # mapping as info): base Instance for `kento list`, SystemContainer for
+    # `kento lxc list`, VirtualMachine for `kento vm list`.
+    if scope == "lxc":
+        from kento import SystemContainer as _Cls
+    elif scope == "vm":
+        from kento import VirtualMachine as _Cls
+    else:
+        from kento import Instance as _Cls
+    insts = _Cls.list()
+
+    # JC6 — preserve today's `list` wire byte-for-byte. The legacy list.py SKIPS
+    # an entry whose status probe is INDETERMINATE (an unreadable PVE config or a
+    # raising is_running -> its `except OSError: continue`). The typed status
+    # resolver instead yields Status.UNKNOWN for exactly that case (a real domain
+    # state, total over the store). To match the legacy wire (seadog reads it) we
+    # drop the UNKNOWN rows here, in the handler, so the projected array/table is
+    # byte-identical to today's. This is cleanly distinguishable (status is
+    # exactly UNKNOWN), so it is a filter, not an intentional improvement.
+    # (Genuinely corrupt/raced entries are already skipped INSIDE Instance.list,
+    # mirroring list.py; this filter only handles the indeterminate-probe case.)
+    from kento import Status
+    insts = [i for i in insts if i.status is not Status.UNKNOWN]
+
+    from kento_cli import _projection
+    show_size = getattr(args, "show_size", False)
+    if getattr(args, "as_json", False):
+        print(_projection.instances_to_json(insts, show_size=show_size))
+    else:
+        print(_projection.instances_to_human(insts, show_size=show_size))
+
+
+def _dispatch_diagnose(args) -> None:
+    """Re-pointed `kento diagnose [NAME] [--json]` (Phase 6, Block 18).
+
+    diagnose degrades without root (the scan handles it); do NOT require_root().
+    getattr guards against the top-level positional `name` being absent /
+    collapsed to "" by the argparse layer.
+
+    Two scopes map onto the typed surface (disclosed seam — the module-level
+    ``kento.diagnose()`` is host-wide only, takes no name):
+
+    * NO name (host-wide): the module-level ``kento.diagnose()`` FUNCTION (the
+      shadow foot-gun: ``from kento import diagnose`` is the function, NOT the
+      submodule). It returns ALL findings as a typed ``Diagnosis``.
+    * a NAME: there is no typed entry point that reproduces today's named wire
+      (host checks + that one instance's checks, UNFILTERED). ``instance.diagnose()``
+      deliberately filters to INSTANCE-domain + self, dropping the host findings,
+      so it is NOT byte-compatible. To preserve the legacy wire we reach the
+      ``kento.diagnose`` SUBMODULE's ``run_diagnostics(name)`` (shadow-safe via
+      ``importlib.import_module``) and map it with the library's own pure mapper
+      (no domain/subject filter) — the same translation ``kento.diagnose()`` uses
+      internally.
+
+    ``instances_scanned`` is caller-supplied to the projection (the typed
+    ``Diagnosis`` carries no count — §11.8 D3): the host-wide count is
+    ``len(Instance.list())`` (the same ``*/kento-image`` enumeration over both
+    bases ``run_diagnostics(None)`` uses); the named count is ``1`` (a named scan
+    visits exactly one resolved instance). Exit ``1`` iff there are problems
+    (WARNING/ERROR), else ``0`` — the same ``problem_count``-driven contract.
+    """
+    from kento_cli import _projection
+
+    name = getattr(args, "name", None) or None
+
+    if name is None:
+        import kento
+        diag = kento.diagnose()
+        # The host-wide enumeration count (matches run_diagnostics(None)'s
+        # len(enumerated dirs); see _projection.diagnosis_to_wire_dict on why the
+        # count must be caller-supplied rather than finding-derived). Disclosed
+        # edge: Instance.list drops an entry its snapshot loader cannot read,
+        # while run_diagnostics' enumerate drops only on OSError reading the
+        # mode; in the normal store the two counts agree.
+        from kento import Instance
+        instances_scanned = len(Instance.list())
+    else:
+        # Named scope: no typed byte-faithful path — reach the submodule.
+        import importlib
+
+        from kento._diagnosis import diagnosis_from_report
+
+        diagnose_mod = importlib.import_module("kento.diagnose")
+        report = diagnose_mod.run_diagnostics(name)  # raises on unknown name
+        diag = diagnosis_from_report(report)
+        instances_scanned = 1
+
+    if args.as_json:
+        print(_projection.diagnosis_to_json(
+            diag, instances_scanned=instances_scanned))
+    else:
+        print(_projection.diagnosis_to_human(
+            diag, instances_scanned=instances_scanned))
+
+    sys.exit(1 if diag.problems else 0)
 
 
 def _dispatch_pull(args) -> None:
