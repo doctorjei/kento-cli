@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+> Phase 6 of the library re-point: the lifecycle and interactive commands now run
+> through the typed `kento-core` `Instance` API (`start`/`stop`/`destroy`/`scrub`
+> + `attach`/`exec`/`logs`/`suspend`/`resume`). Behavior is preserved except for
+> the deliberate library improvements below.
+
+- **`stop` / `shutdown` are now graceful-never-kill by default.** A bare
+  `kento stop NAME` (no flags) issues a graceful shutdown and, if the instance is
+  still up after the grace window, reports `cannot stop; try force` and exits
+  non-zero (exit 1) — it no longer hard-kills the guest as a fallback. Pass
+  `-f`/`--force` to hard-kill, or `--force --timeout N` to grace for N seconds and
+  then kill. `--timeout N` (without `--force`) sets the graceful grace window.
+  `--graceful-only` is now equivalent to the default and is retained for
+  compatibility. (Previously `--force --timeout` was rejected as mutually
+  exclusive; it is now the valid grace-then-kill form. `--graceful-only --force`
+  is still rejected as contradictory.) The "still running" error message wording
+  differs from prior releases.
+- **`destroy` now releases the instance's own image hold.** Removing an instance
+  releases the image hold it placed, preventing orphan-hold buildup that could
+  keep a pruned image's storage pinned. (`prune` still owns image removal.)
+- **`attach` / `enter` no longer propagate the wrapped tool's exit code.** A clean
+  detach now exits 0 regardless of the last command run in the session (the
+  console session's exit code is not a meaningful result). A genuine failure to
+  attach (no console/serial socket, not a TTY) still reports a clear error and
+  exits 1. (The wrapped tool's exit code is not lost — the library captures it on
+  the instance handle and logs it.)
+- **`logs` still forwards arbitrary `journalctl` arguments.** The full journalctl
+  pass-through (`-f`, `-n 50`, `--since ...`, `-u sshd`, ...) is preserved
+  byte-for-byte; `kento logs NAME <any journalctl args>` works exactly as before.
+  (`exec` is unchanged: it still returns the in-guest command's exit code.)
+
 ## [1.6.3] - 2026-06-28
 
 > Sibling-synced with **kento-core 1.6.0.dev4** (re-pinned dependency). The core

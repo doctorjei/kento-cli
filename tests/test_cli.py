@@ -664,48 +664,62 @@ def _make_container(base: Path, dirname: str, name: str, mode: str) -> Path:
 
 
 class TestDispatchScope:
-    """Test that scoped commands (kento vm / kento lxc) resolve to the
-    correct namespace when a name exists in both LXC_BASE and VM_BASE.
+    """Lifecycle dispatch re-pointed onto the typed Instance.* methods (Phase 6).
 
-    This is the regression test for the T3 dispatch scope bug.
+    These verify the scope -> class routing (kento / kento lxc / kento vm) and the
+    M5/M6/M7/M8 method calls. They patch the typed lifecycle method on the
+    resolved class and assert it is invoked on the instance the scope resolves to.
+
+    SCOPED DUPLICATE-NAME DISAMBIGUATION (T3): a name that exists in BOTH
+    namespaces (a ``create --force`` duplicate) resolves the SCOPED kind under an
+    explicit ``kento vm``/``kento lxc`` scope, while the BARE command still errors
+    "ambiguous" (the user must pick a scope). Preserved by the director-ruled
+    kento-core fix that makes subclass ``get`` narrow within its own namespace;
+    see ``test_scoped_dup_name_resolves_scoped_kind`` +
+    ``test_bare_start_errors_on_ambiguous_name``.
     """
 
     def test_vm_scope_starts_vm_not_lxc(self, tmp_path):
-        """kento vm start X should start the VM, not the LXC container."""
+        """kento vm start X starts the VM even when an LXC of the same name exists
+        (T3: scoped narrowing on a cross-namespace duplicate name)."""
         lxc_base = tmp_path / "lxc"
         vm_base = tmp_path / "vm"
-        lxc_dir = _make_container(lxc_base, "mybox", "mybox", "lxc")
+        _make_container(lxc_base, "mybox", "mybox", "lxc")
         vm_dir = _make_container(vm_base, "mybox", "mybox", "vm")
 
-        mock_start = MagicMock()
         with patch("kento.LXC_BASE", lxc_base), \
              patch("kento.VM_BASE", vm_base), \
-             patch("kento.start.start", mock_start):
+             patch("kento.VirtualMachine.start", autospec=True) as mock_start:
             main(["vm", "start", "mybox"])
 
-        mock_start.assert_called_once_with(
-            "mybox", container_dir=vm_dir, mode="vm",
-        )
+        assert mock_start.call_count == 1
+        inst = mock_start.call_args[0][0]
+        from kento import VirtualMachine
+        assert isinstance(inst, VirtualMachine)
+        assert inst.name == "mybox" and inst._dir == vm_dir
 
     def test_lxc_scope_starts_lxc_not_vm(self, tmp_path):
-        """kento lxc start X should start the LXC container, not the VM."""
+        """kento lxc start X starts the LXC container even when a VM of the same
+        name exists (T3: scoped narrowing on a cross-namespace duplicate)."""
         lxc_base = tmp_path / "lxc"
         vm_base = tmp_path / "vm"
         lxc_dir = _make_container(lxc_base, "mybox", "mybox", "lxc")
-        vm_dir = _make_container(vm_base, "mybox", "mybox", "vm")
+        _make_container(vm_base, "mybox", "mybox", "vm")
 
-        mock_start = MagicMock()
         with patch("kento.LXC_BASE", lxc_base), \
              patch("kento.VM_BASE", vm_base), \
-             patch("kento.start.start", mock_start):
+             patch("kento.SystemContainer.start", autospec=True) as mock_start:
             main(["lxc", "start", "mybox"])
 
-        mock_start.assert_called_once_with(
-            "mybox", container_dir=lxc_dir, mode="lxc",
-        )
+        assert mock_start.call_count == 1
+        inst = mock_start.call_args[0][0]
+        from kento import SystemContainer
+        assert isinstance(inst, SystemContainer)
+        assert inst.name == "mybox" and inst._dir == lxc_dir
 
     def test_bare_start_errors_on_ambiguous_name(self, tmp_path):
-        """kento start X (bare) should error when name exists in both namespaces."""
+        """kento start X (bare) still errors when name exists in both namespaces
+        (the bare command needs an explicit scope — base get is unchanged)."""
         lxc_base = tmp_path / "lxc"
         vm_base = tmp_path / "vm"
         _make_container(lxc_base, "mybox", "mybox", "lxc")
@@ -717,138 +731,166 @@ class TestDispatchScope:
                 main(["start", "mybox"])
             assert exc.value.code == 1
 
-    def test_vm_scope_shutdown(self, tmp_path):
-        """kento vm shutdown X should shut down the VM, not the LXC container."""
+    def test_scoped_dup_name_resolves_scoped_kind(self, tmp_path):
+        """T3 (FIXED): a scoped command on a duplicate name (both namespaces)
+        resolves the SCOPED kind, not 'ambiguous'. Restored by the director-ruled
+        kento-core subclass-get narrowing fix; this asserts both directions."""
         lxc_base = tmp_path / "lxc"
         vm_base = tmp_path / "vm"
         lxc_dir = _make_container(lxc_base, "mybox", "mybox", "lxc")
         vm_dir = _make_container(vm_base, "mybox", "mybox", "vm")
 
-        mock_shutdown = MagicMock()
         with patch("kento.LXC_BASE", lxc_base), \
              patch("kento.VM_BASE", vm_base), \
-             patch("kento.stop.shutdown", mock_shutdown):
+             patch("kento.VirtualMachine.destroy", autospec=True) as mock_vm, \
+             patch("kento.SystemContainer.destroy", autospec=True) as mock_lxc:
+            main(["vm", "destroy", "--force", "mybox"])
+            main(["lxc", "destroy", "--force", "mybox"])
+
+        assert mock_vm.call_count == 1
+        assert mock_vm.call_args[0][0]._dir == vm_dir
+        assert mock_lxc.call_count == 1
+        assert mock_lxc.call_args[0][0]._dir == lxc_dir
+
+    def test_vm_scope_shutdown(self, tmp_path):
+        """kento vm shutdown X calls VirtualMachine.stop (graceful, force=False)."""
+        lxc_base = tmp_path / "lxc"
+        vm_base = tmp_path / "vm"
+        vm_dir = _make_container(vm_base, "mybox", "mybox", "vm")
+        lxc_base.mkdir(parents=True, exist_ok=True)
+
+        with patch("kento.LXC_BASE", lxc_base), \
+             patch("kento.VM_BASE", vm_base), \
+             patch("kento.VirtualMachine.stop", autospec=True) as mock_stop:
             main(["vm", "shutdown", "mybox"])
 
-        mock_shutdown.assert_called_once_with(
-            "mybox", force=False, container_dir=vm_dir, mode="vm",
-            timeout=None, graceful_only=False,
-        )
+        assert mock_stop.call_count == 1
+        inst = mock_stop.call_args[0][0]
+        assert inst._dir == vm_dir
+        assert mock_stop.call_args.kwargs == {"timeout": None, "force": False}
 
     def test_lxc_scope_destroy(self, tmp_path):
-        """kento lxc destroy X should destroy the LXC container, not the VM."""
+        """kento lxc destroy X calls SystemContainer.destroy (force=False)."""
         lxc_base = tmp_path / "lxc"
         vm_base = tmp_path / "vm"
         lxc_dir = _make_container(lxc_base, "mybox", "mybox", "lxc")
-        vm_dir = _make_container(vm_base, "mybox", "mybox", "vm")
+        vm_base.mkdir(parents=True, exist_ok=True)
 
-        mock_destroy = MagicMock()
         with patch("kento.LXC_BASE", lxc_base), \
              patch("kento.VM_BASE", vm_base), \
-             patch("kento.destroy.destroy", mock_destroy):
+             patch("kento.SystemContainer.destroy", autospec=True) as mock_destroy:
             main(["lxc", "destroy", "mybox"])
 
-        mock_destroy.assert_called_once_with(
-            "mybox", force=False, container_dir=lxc_dir, mode="lxc",
-        )
+        assert mock_destroy.call_count == 1
+        inst = mock_destroy.call_args[0][0]
+        assert inst._dir == lxc_dir
+        assert mock_destroy.call_args.kwargs == {"force": False}
 
-    def test_dispatch_vm_scope_reads_kento_mode_pve_vm(self, tmp_path):
-        """kento vm stop X must read kento-mode and dispatch with mode='pve-vm'.
-
-        Regression: _dispatch_multi previously hardcoded mode='vm' for the vm
-        scope, which caused pve-vm instances to be mishandled by stop/start/
-        destroy/scrub (e.g. taking the plain-VM code path instead of the PVE
-        teardown path).
-        """
+    def test_dispatch_vm_scope_resolves_pve_vm_mode(self, tmp_path):
+        """kento vm stop X resolves a pve-vm instance to a VirtualMachine handle
+        with mode='pve-vm' (the typed handle carries the mode internally)."""
         lxc_base = tmp_path / "lxc"
         vm_base = tmp_path / "vm"
         vm_dir = _make_container(vm_base, "mybox", "mybox", "pve-vm")
+        (vm_dir / "kento-vmid").write_text("100")
+        lxc_base.mkdir(parents=True, exist_ok=True)
 
-        mock_shutdown = MagicMock()
         with patch("kento.LXC_BASE", lxc_base), \
              patch("kento.VM_BASE", vm_base), \
-             patch("kento.stop.shutdown", mock_shutdown):
+             patch("kento.VirtualMachine.stop", autospec=True) as mock_stop:
             main(["vm", "stop", "mybox"])
 
-        mock_shutdown.assert_called_once_with(
-            "mybox", force=False, container_dir=vm_dir, mode="pve-vm",
-            timeout=None, graceful_only=False,
-        )
+        inst = mock_stop.call_args[0][0]
+        assert inst._mode == "pve-vm" and inst._dir == vm_dir
 
-    def test_dispatch_vm_scope_defaults_to_vm_when_mode_missing(self, tmp_path):
-        """Legacy vm instances without a kento-mode file fall back to mode='vm'."""
-        lxc_base = tmp_path / "lxc"
-        vm_base = tmp_path / "vm"
-        # Build a vm-namespace dir WITHOUT a kento-mode file (legacy layout).
-        vm_dir = vm_base / "mybox"
-        vm_dir.mkdir(parents=True)
-        (vm_dir / "kento-name").write_text("mybox")
-        (vm_dir / "kento-image").write_text("test-image")
-        assert not (vm_dir / "kento-mode").exists()
-
-        mock_shutdown = MagicMock()
-        with patch("kento.LXC_BASE", lxc_base), \
-             patch("kento.VM_BASE", vm_base), \
-             patch("kento.stop.shutdown", mock_shutdown):
-            main(["vm", "stop", "mybox"])
-
-        mock_shutdown.assert_called_once_with(
-            "mybox", force=False, container_dir=vm_dir, mode="vm",
-            timeout=None, graceful_only=False,
-        )
-
-    def test_dispatch_lxc_scope_reads_kento_mode_pve_lxc(self, tmp_path):
-        """Symmetric guard: kento lxc stop X must dispatch with mode='pve-lxc'
-        for a pve-lxc instance, not the default 'lxc'.
-        """
+    def test_dispatch_lxc_scope_resolves_pve_lxc_mode(self, tmp_path):
+        """Symmetric: kento lxc stop X resolves a pve-lxc handle (mode='pve-lxc')."""
         lxc_base = tmp_path / "lxc"
         vm_base = tmp_path / "vm"
         lxc_dir = _make_container(lxc_base, "mybox", "mybox", "pve-lxc")
+        (lxc_dir / "kento-vmid").write_text("100")
+        vm_base.mkdir(parents=True, exist_ok=True)
 
-        mock_shutdown = MagicMock()
         with patch("kento.LXC_BASE", lxc_base), \
              patch("kento.VM_BASE", vm_base), \
-             patch("kento.stop.shutdown", mock_shutdown):
+             patch("kento.SystemContainer.stop", autospec=True) as mock_stop:
             main(["lxc", "stop", "mybox"])
 
-        mock_shutdown.assert_called_once_with(
-            "mybox", force=False, container_dir=lxc_dir, mode="pve-lxc",
-            timeout=None, graceful_only=False,
-        )
+        inst = mock_stop.call_args[0][0]
+        assert inst._mode == "pve-lxc" and inst._dir == lxc_dir
 
     def test_vm_stop_passes_timeout_through(self, tmp_path):
-        """kento vm stop --timeout 90 threads timeout=90 into shutdown()."""
+        """kento vm stop --timeout 90 threads timeout=90 into stop()."""
         lxc_base = tmp_path / "lxc"
         vm_base = tmp_path / "vm"
-        vm_dir = _make_container(vm_base, "mybox", "mybox", "pve-vm")
+        vm_dir = _make_container(vm_base, "mybox", "mybox", "vm")
+        lxc_base.mkdir(parents=True, exist_ok=True)
 
-        mock_shutdown = MagicMock()
         with patch("kento.LXC_BASE", lxc_base), \
              patch("kento.VM_BASE", vm_base), \
-             patch("kento.stop.shutdown", mock_shutdown):
+             patch("kento.VirtualMachine.stop", autospec=True) as mock_stop:
             main(["vm", "stop", "--timeout", "90", "mybox"])
 
-        mock_shutdown.assert_called_once_with(
-            "mybox", force=False, container_dir=vm_dir, mode="pve-vm",
-            timeout=90, graceful_only=False,
-        )
+        assert mock_stop.call_args.kwargs == {"timeout": 90, "force": False}
 
-    def test_vm_stop_passes_graceful_only_through(self, tmp_path):
-        """kento vm stop --graceful-only threads graceful_only=True into shutdown()."""
+    def test_vm_stop_force_with_timeout_now_valid(self, tmp_path):
+        """DELTA: --force --timeout N (grace-then-kill) is now valid (force=True,
+        timeout=N) — was a ValidationError before the M6 redesign."""
         lxc_base = tmp_path / "lxc"
         vm_base = tmp_path / "vm"
-        vm_dir = _make_container(vm_base, "mybox", "mybox", "pve-vm")
+        vm_dir = _make_container(vm_base, "mybox", "mybox", "vm")
+        lxc_base.mkdir(parents=True, exist_ok=True)
 
-        mock_shutdown = MagicMock()
         with patch("kento.LXC_BASE", lxc_base), \
              patch("kento.VM_BASE", vm_base), \
-             patch("kento.stop.shutdown", mock_shutdown):
+             patch("kento.VirtualMachine.stop", autospec=True) as mock_stop:
+            main(["vm", "stop", "--force", "--timeout", "20", "mybox"])
+
+        assert mock_stop.call_args.kwargs == {"timeout": 20, "force": True}
+
+    def test_vm_stop_graceful_only_maps_to_force_false(self, tmp_path):
+        """--graceful-only folds into force=False (the new default)."""
+        lxc_base = tmp_path / "lxc"
+        vm_base = tmp_path / "vm"
+        vm_dir = _make_container(vm_base, "mybox", "mybox", "vm")
+        lxc_base.mkdir(parents=True, exist_ok=True)
+
+        with patch("kento.LXC_BASE", lxc_base), \
+             patch("kento.VM_BASE", vm_base), \
+             patch("kento.VirtualMachine.stop", autospec=True) as mock_stop:
             main(["vm", "stop", "--graceful-only", "mybox"])
 
-        mock_shutdown.assert_called_once_with(
-            "mybox", force=False, container_dir=vm_dir, mode="pve-vm",
-            timeout=None, graceful_only=True,
-        )
+        assert mock_stop.call_args.kwargs == {"timeout": None, "force": False}
+
+    def test_vm_stop_graceful_only_and_force_rejected(self, tmp_path):
+        """--graceful-only --force stays a ValidationError (contradictory)."""
+        lxc_base = tmp_path / "lxc"
+        vm_base = tmp_path / "vm"
+        _make_container(vm_base, "mybox", "mybox", "vm")
+        lxc_base.mkdir(parents=True, exist_ok=True)
+
+        with patch("kento.LXC_BASE", lxc_base), \
+             patch("kento.VM_BASE", vm_base), \
+             patch("kento.VirtualMachine.stop", autospec=True) as mock_stop:
+            with pytest.raises(SystemExit) as exc:
+                main(["vm", "stop", "--graceful-only", "--force", "mybox"])
+        assert exc.value.code == 1
+        mock_stop.assert_not_called()
+
+    def test_lxc_scope_scrub(self, tmp_path):
+        """kento lxc scrub X calls SystemContainer.scrub()."""
+        lxc_base = tmp_path / "lxc"
+        vm_base = tmp_path / "vm"
+        lxc_dir = _make_container(lxc_base, "mybox", "mybox", "lxc")
+        vm_base.mkdir(parents=True, exist_ok=True)
+
+        with patch("kento.LXC_BASE", lxc_base), \
+             patch("kento.VM_BASE", vm_base), \
+             patch("kento.SystemContainer.scrub", autospec=True) as mock_scrub:
+            main(["lxc", "scrub", "mybox"])
+
+        assert mock_scrub.call_count == 1
+        assert mock_scrub.call_args[0][0]._dir == lxc_dir
 
 
 class TestRunCommand:
