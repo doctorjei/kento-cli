@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING (`--json`): `upper_size` is now an int (bytes, allocated), was a
+  human string (storage-depth pass, block SD4b).** In `kento list --json`,
+  `kento info --json`, and `kento inspect --json`, the `upper_size` field is now
+  the **allocated** byte count as a JSON integer (e.g. `5242880`), sourced from
+  the typed `kento-core` `Instance.disk_usage()`. It was previously a human-
+  readable `du -sh` string (e.g. `"5.0M"`). It is also now **always present** as
+  an int (`0` when the instance has no writable upper) for a stable machine
+  schema — `info --json` previously OMITTED it when absent, and `list --json`
+  previously emitted the string `"0"`. **Human output is unchanged:** the `list`
+  table `UPPER SIZE` column and `info`'s `Upper size:` line still show a readable
+  size string (a clean `du -h`-style format, `5.0M`); the int reaches `--json`
+  only (same pattern as `vmid`). This is a deliberate change to the deprecation-
+  bound `--json` output edge. The CLI also no longer builds the overlay upper
+  path or runs `du` itself for this size — the storage accounting now lives
+  entirely in the library (`Instance.disk_usage()`), closing that CLI↔library
+  seam.
+  - *Known follow-up (not fixed here):* the verbose `--json` `layer_sizes` field
+    remains a list of human strings (lower-layer accounting has no
+    `disk_usage()` equivalent yet), so `upper_size` (int) and `layer_sizes`
+    (strings) are now asymmetric on the wire. Tracked as a future cleanup.
+
 - **`kento images` now formats the typed `kento-core` `ImageRecord` ledger
   (closes the last classes-only seam for images).** The command consumes
   `kento.ImageRecord.list()` (typed records) and renders the human table

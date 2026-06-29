@@ -18,6 +18,7 @@ human AND --json.
 from __future__ import annotations
 
 import importlib
+import json
 from pathlib import Path
 from unittest import mock
 
@@ -112,6 +113,27 @@ def _info_golden(container_dir: Path, name: str, mode: str, *,
 
 
 # --------------------------------------------------------------------------- #
+# humanizer.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("n,expected", [
+    (0, "0B"),
+    (1, "1B"),
+    (1023, "1023B"),
+    (1024, "1.0K"),
+    (4096, "4.0K"),
+    (1536, "1.5K"),
+    (1024 * 1024, "1.0M"),
+    (5 * 1024 * 1024, "5.0M"),
+    (1024 ** 3, "1.0G"),
+    (1024 ** 4, "1.0T"),
+])
+def test_human_bytes(n, expected):
+    assert proj._human_bytes(n) == expected
+
+
+# --------------------------------------------------------------------------- #
 # info / inspect.
 # --------------------------------------------------------------------------- #
 
@@ -162,7 +184,14 @@ def test_info_pve_lxc_mode_normalized(tmp_path):
 
 
 def test_info_verbose_layers_and_passthrough(tmp_path):
-    """--verbose adds upper_size/layers/layer_sizes + the pass-through section."""
+    """--verbose adds upper_size/layers/layer_sizes + the pass-through section.
+
+    SD4b: upper_size is now an int (bytes, allocated) from Instance.disk_usage()
+    on the --json wire (was a du -sh human string), and the human text humanizes
+    it. The legacy library still emits the old string, so this no longer asserts
+    byte-equality with the legacy golden for upper_size; layers/layer_sizes and
+    the pass-through section are unchanged and DO still match the legacy golden.
+    """
     layer_a = tmp_path / "layers" / "a"
     layer_a.mkdir(parents=True)
     (layer_a / "f").write_text("x" * 100)
@@ -179,12 +208,58 @@ def test_info_verbose_layers_and_passthrough(tmp_path):
             "kento-lxc-args": "lxc.cap.drop = sys_admin\n",
         },
     )
-    golden_json = _info_golden(d, "vbose", "lxc", as_json=True, verbose=True)
-    golden_human = _info_golden(d, "vbose", "lxc", as_json=False, verbose=True)
     inst = _load(d, "lxc")
     with mock.patch("kento_cli._projection.is_running", return_value=False):
-        assert proj.instance_to_json(inst, verbose=True) == golden_json
-        assert proj.instance_to_human(inst, verbose=True) == golden_human
+        wire = proj.instance_to_wire_dict(inst, verbose=True)
+        human = proj.instance_to_human(inst, verbose=True)
+
+    # --json upper_size is an int (bytes), equal to Instance.disk_usage().
+    assert isinstance(wire["upper_size"], int)
+    assert not isinstance(wire["upper_size"], bool)
+    assert wire["upper_size"] == inst.disk_usage()
+    assert wire["upper_size"] > 0  # a populated upper
+
+    # layers / layer_sizes are unchanged — still byte-match the legacy golden.
+    golden_wire = json.loads(
+        _info_golden(d, "vbose", "lxc", as_json=True, verbose=True))
+    assert wire["layers"] == golden_wire["layers"]
+    assert wire["layer_sizes"] == golden_wire["layer_sizes"]
+    assert wire["lxc_args"] == golden_wire["lxc_args"]
+
+    # Human text humanizes the int (NOT the raw int, NOT the legacy du -sh).
+    expected = proj._human_bytes(wire["upper_size"])
+    assert f"Upper size: {expected}" in human
+    assert f"Upper size: {wire['upper_size']}" not in human  # not the raw int
+    # The pass-through section still renders verbatim.
+    assert "lxc.cap.drop = sys_admin" in human
+
+
+def test_info_verbose_upper_size_absent_is_zero_int(tmp_path):
+    """SD4b presence: with no upper dir, info --verbose --json still emits
+    upper_size as int 0 (always-include, stable schema) — the legacy behavior
+    OMITTED it; the new contract always includes it."""
+    d = _build_lxc(tmp_path / "lxc", "noup", image="debian:bookworm",
+                   name="noup", mode="lxc")
+    inst = _load(d, "lxc")
+    with mock.patch("kento_cli._projection.is_running", return_value=False):
+        wire = proj.instance_to_wire_dict(inst, verbose=True)
+    assert wire["upper_size"] == 0
+    assert isinstance(wire["upper_size"], int)
+
+
+def test_info_verbose_upper_size_sourced_from_disk_usage(tmp_path):
+    """SD4b seam: the CLI sources upper_size from Instance.disk_usage(), not by
+    building state_dir/upper + running du/_get_size itself. Stubbing disk_usage
+    drives the wire value, proving the CLI no longer does its own accounting."""
+    d = _build_lxc(tmp_path / "lxc", "seam", image="debian:bookworm",
+                   name="seam", mode="lxc")
+    inst = _load(d, "lxc")
+    with mock.patch("kento_cli._projection.is_running", return_value=False), \
+         mock.patch.object(type(inst), "disk_usage", return_value=4242):
+        wire = proj.instance_to_wire_dict(inst, verbose=True)
+        human = proj.instance_to_human(inst, verbose=True)
+    assert wire["upper_size"] == 4242
+    assert f"Upper size: {proj._human_bytes(4242)}" in human
 
 
 def test_info_running_status(lxc_full):
@@ -286,6 +361,10 @@ def test_list_mixed_human_and_json(tmp_path):
 
 
 def test_list_with_size_human_and_json(tmp_path):
+    """SD4b: list --json upper_size is an int (bytes, allocated) from
+    Instance.disk_usage(); the human table humanizes it. The legacy library
+    still emits the old du -sh string, so this asserts the NEW contract directly
+    rather than byte-equality with the legacy golden."""
     lxc_base = tmp_path / "lxc"
     vm_base = tmp_path / "vm"
     state = tmp_path / "state"
@@ -295,11 +374,38 @@ def test_list_with_size_human_and_json(tmp_path):
     _build_lxc(lxc_base, "web", image="debian:bookworm", name="web", mode="lxc",
                **{"kento-state": f"{state}\n"})
     vm_base.mkdir()
-    golden_h = _list_golden(lxc_base, vm_base, as_json=False, show_size=True)
-    golden_j = _list_golden(lxc_base, vm_base, as_json=True, show_size=True)
     insts = _load_all(lxc_base, vm_base)
-    assert proj.instances_to_human(insts, show_size=True) == golden_h
-    assert proj.instances_to_json(insts, show_size=True) == golden_j
+    web = next(i for i in insts if i.name == "web")
+
+    wire = json.loads(proj.instances_to_json(insts, show_size=True))
+    entry = next(e for e in wire if e["name"] == "web")
+    # --json: int (bytes), equal to disk_usage().
+    assert isinstance(entry["upper_size"], int)
+    assert not isinstance(entry["upper_size"], bool)
+    assert entry["upper_size"] == web.disk_usage()
+    assert entry["upper_size"] > 0
+
+    # human table: the humanized string, NOT the raw int.
+    human = proj.instances_to_human(insts, show_size=True)
+    assert "UPPER SIZE" in human
+    assert proj._human_bytes(web.disk_usage()) in human
+    assert str(web.disk_usage()) not in human  # not the raw int
+
+
+def test_list_with_size_json_absent_upper_is_zero_int(tmp_path):
+    """SD4b presence: absent upper => upper_size present as int 0 (stable
+    machine schema), not omitted, not the string "0"."""
+    lxc_base = tmp_path / "lxc"
+    vm_base = tmp_path / "vm"
+    # No kento-state / no upper dir => disk_usage() returns 0.
+    _build_lxc(lxc_base, "web", image="debian:bookworm", name="web", mode="lxc")
+    vm_base.mkdir()
+    insts = _load_all(lxc_base, vm_base)
+    wire = json.loads(proj.instances_to_json(insts, show_size=True))
+    entry = next(e for e in wire if e["name"] == "web")
+    assert entry["upper_size"] == 0
+    assert isinstance(entry["upper_size"], int)
+    assert entry["upper_size"] != "0"  # int 0, not the legacy string
 
 
 # --------------------------------------------------------------------------- #
