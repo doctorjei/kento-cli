@@ -1,21 +1,24 @@
-"""CLI wiring for `kento diagnose [NAME] [--json]`, re-pointed (Block 18).
+"""CLI wiring for `kento diagnose [NAME] [--json]`, re-pointed (Blocks 18 + 22).
 
-Phase 6: the handler no longer calls `kento.diagnose.run_diagnostics` +
-`format_diagnostics` directly. It now:
-  * NO name (host-wide): calls the module-level `kento.diagnose()` FUNCTION (the
-    shadow-safe entry point — NOT the submodule) -> a typed `Diagnosis`, and
-    supplies `instances_scanned = len(Instance.list())`.
-  * a NAME: reaches the `kento.diagnose` SUBMODULE's `run_diagnostics(name)`
-    (no typed byte-faithful path exists — the named wire is host+instance checks
-    unfiltered), maps it via the library mapper, and supplies
-    `instances_scanned = 1`.
+Phase 6 (Block 18) re-pointed the handler off `format_diagnostics`; Block 22
+collapses BOTH scopes onto the SAME typed entry point — the module-level
+`kento.diagnose(name)` FUNCTION (the shadow-safe entry point — NOT the
+`kento.diagnose` submodule) -> a typed `Diagnosis`. Classes-only across the
+seam: the handler no longer imports any library internals (no
+`run_diagnostics`, no `diagnosis_from_report`, no `importlib.import_module`).
+  * NO name (host-wide): `kento.diagnose(None)`, `instances_scanned =
+    len(Instance.list())`.
+  * a NAME: `kento.diagnose(name)` (the library narrows + projects unfiltered —
+    the named wire is host+instance checks), `instances_scanned = 1`.
 Then prints the Block-17 projection (`diagnosis_to_json` / `diagnosis_to_human`)
 and exits `1 if diag.problems else 0`. An unresolved name raises
-InstanceNotFoundError -> the shared _handle turns it into "Error: ..." + exit 1.
+InstanceNotFoundError (from the library) -> the shared _handle turns it into
+"Error: ..." + exit 1.
 
-These tests assert the WIRING (which entry point, the count, the json-vs-human
-branch, the exit code, error mapping). The byte-identical wire produced by the
-projection is pinned by test_projection_golden.py.
+These tests assert the WIRING (the single entry point, the count, the
+json-vs-human branch, the exit code, error mapping) AND that no dict / library
+internal crosses the seam. The byte-identical wire produced by the projection
+is pinned by test_projection_golden.py.
 """
 import importlib
 import json
@@ -59,8 +62,9 @@ def test_diagnose_no_name_uses_module_function(capsys, monkeypatch):
     len(Instance.list()); human output; exit 0 (clean)."""
     called = {}
 
-    def fake_diagnose():
+    def fake_diagnose(name=None):
         called["fn"] = True
+        called["name"] = name
         return _typed(_clean_report())
 
     monkeypatch.setattr(kento, "diagnose", fake_diagnose)
@@ -72,13 +76,14 @@ def test_diagnose_no_name_uses_module_function(capsys, monkeypatch):
         cli.main(["diagnose"])
     assert exc.value.code == 0
     assert called["fn"] is True
+    assert called["name"] is None  # host-wide -> name=None
     assert capsys.readouterr().out.strip() == "H:2"
 
 
 def test_diagnose_no_name_json_branch_and_exit_1(capsys, monkeypatch):
     """No name + --json + problems -> json projection + exit 1."""
     monkeypatch.setattr(kento, "diagnose",
-                        lambda: _typed(_problem_report()))
+                        lambda name=None: _typed(_problem_report()))
     monkeypatch.setattr(kento.Instance, "list",
                         classmethod(lambda cls: [object(), object()]))
     monkeypatch.setattr(cli._projection, "diagnosis_to_human",
@@ -92,21 +97,24 @@ def test_diagnose_no_name_json_branch_and_exit_1(capsys, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# Named scan -> the SUBMODULE run_diagnostics(name), instances_scanned == 1.
+# Named scan -> the SAME typed kento.diagnose(name) fn, instances_scanned == 1.
+# Block 22: no submodule reach, no dict crosses the seam.
 # --------------------------------------------------------------------------- #
 
 
-def test_diagnose_name_uses_submodule_with_count_1(capsys, monkeypatch):
+def test_diagnose_name_uses_module_function_with_count_1(capsys, monkeypatch):
     seen = {}
 
-    def fake_run(name=None):
+    def fake_diagnose(name=None):
         seen["name"] = name
-        return _clean_report()
+        return _typed(_clean_report())
 
-    monkeypatch.setattr(_diagnose_mod, "run_diagnostics", fake_run)
-    # The module-level fn must NOT be used on the named path.
-    monkeypatch.setattr(kento, "diagnose",
-                        lambda: pytest.fail("module fn used on named path"))
+    monkeypatch.setattr(kento, "diagnose", fake_diagnose)
+    # The handler must NOT reach the submodule's run_diagnostics on the named
+    # path (Block 22 removed that reach — it is the dict-crossing violation).
+    monkeypatch.setattr(
+        _diagnose_mod, "run_diagnostics",
+        lambda *a, **k: pytest.fail("submodule run_diagnostics reached"))
     monkeypatch.setattr(cli._projection, "diagnosis_to_human",
                         lambda diag, *, instances_scanned: f"N:{instances_scanned}")
     with pytest.raises(SystemExit) as exc:
@@ -116,9 +124,28 @@ def test_diagnose_name_uses_submodule_with_count_1(capsys, monkeypatch):
     assert capsys.readouterr().out.strip() == "N:1"
 
 
+def test_diagnose_name_passes_diagnosis_not_dict(monkeypatch):
+    """The handler must hand the projection a typed Diagnosis, never a dict."""
+    from kento import Diagnosis
+
+    captured = {}
+    monkeypatch.setattr(kento, "diagnose",
+                        lambda name=None: _typed(_clean_report()))
+
+    def capture(diag, *, instances_scanned):
+        captured["diag"] = diag
+        return "x"
+
+    monkeypatch.setattr(cli._projection, "diagnosis_to_human", capture)
+    with pytest.raises(SystemExit):
+        cli.main(["diagnose", "somename"])
+    assert isinstance(captured["diag"], Diagnosis)
+    assert not isinstance(captured["diag"], dict)
+
+
 def test_diagnose_name_problems_exit_1(capsys, monkeypatch):
-    monkeypatch.setattr(_diagnose_mod, "run_diagnostics",
-                        lambda name=None: _problem_report())
+    monkeypatch.setattr(kento, "diagnose",
+                        lambda name=None: _typed(_problem_report()))
     monkeypatch.setattr(cli._projection, "diagnosis_to_human",
                         lambda diag, *, instances_scanned: "x")
     with pytest.raises(SystemExit) as exc:
@@ -132,7 +159,7 @@ def test_diagnose_unknown_name_errors_exit_1(capsys, monkeypatch):
     def boom(name=None):
         raise InstanceNotFoundError("no instance named 'ghost'.")
 
-    monkeypatch.setattr(_diagnose_mod, "run_diagnostics", boom)
+    monkeypatch.setattr(kento, "diagnose", boom)
     with pytest.raises(SystemExit) as exc:
         cli.main(["diagnose", "ghost"])
     assert exc.value.code == 1

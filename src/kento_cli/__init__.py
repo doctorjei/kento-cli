@@ -1587,35 +1587,38 @@ def _dispatch_diagnose(args) -> None:
     getattr guards against the top-level positional `name` being absent /
     collapsed to "" by the argparse layer.
 
-    Two scopes map onto the typed surface (disclosed seam — the module-level
-    ``kento.diagnose()`` is host-wide only, takes no name):
+    Both scopes map onto the SAME typed entry point — the module-level
+    ``kento.diagnose(name)`` FUNCTION (the shadow foot-gun: ``from kento import
+    diagnose`` is the function, NOT the ``kento.diagnose`` submodule). It returns
+    a typed ``Diagnosis`` (classes-only across the seam — no dict crosses, and
+    the CLI no longer imports any library internals):
 
-    * NO name (host-wide): the module-level ``kento.diagnose()`` FUNCTION (the
-      shadow foot-gun: ``from kento import diagnose`` is the function, NOT the
-      submodule). It returns ALL findings as a typed ``Diagnosis``.
-    * a NAME: there is no typed entry point that reproduces today's named wire
-      (host checks + that one instance's checks, UNFILTERED). ``instance.diagnose()``
-      deliberately filters to INSTANCE-domain + self, dropping the host findings,
-      so it is NOT byte-compatible. To preserve the legacy wire we reach the
-      ``kento.diagnose`` SUBMODULE's ``run_diagnostics(name)`` (shadow-safe via
-      ``importlib.import_module``) and map it with the library's own pure mapper
-      (no domain/subject filter) — the same translation ``kento.diagnose()`` uses
-      internally.
+    * NO name (host-wide): ``kento.diagnose(None)`` -> ALL findings (all three
+      domains) for the whole-host scan.
+    * a NAME: ``kento.diagnose(name)`` -> the HOST checks + that one resolved
+      instance's checks, UNFILTERED (preserving today's named wire). The library
+      narrows via ``run_diagnostics(name)`` and projects without a domain/subject
+      filter — deliberately NOT ``instance.diagnose()``'s INSTANCE+self filter,
+      which would drop the host findings and break the wire. An unknown name
+      raises ``InstanceNotFoundError`` (propagated from the library) -> the
+      shared ``_handle`` maps it to "Error: ..." + exit 1.
 
     ``instances_scanned`` is caller-supplied to the projection (the typed
     ``Diagnosis`` carries no count — §11.8 D3): the host-wide count is
     ``len(Instance.list())`` (the same ``*/kento-image`` enumeration over both
     bases ``run_diagnostics(None)`` uses); the named count is ``1`` (a named scan
-    visits exactly one resolved instance). Exit ``1`` iff there are problems
+    visits exactly one resolved instance). This is display metadata derived from
+    TYPED objects, not a dict crossing. Exit ``1`` iff there are problems
     (WARNING/ERROR), else ``0`` — the same ``problem_count``-driven contract.
     """
     from kento_cli import _projection
 
     name = getattr(args, "name", None) or None
 
+    import kento
+    diag = kento.diagnose(name=name)  # raises InstanceNotFoundError on a miss
+
     if name is None:
-        import kento
-        diag = kento.diagnose()
         # The host-wide enumeration count (matches run_diagnostics(None)'s
         # len(enumerated dirs); see _projection.diagnosis_to_wire_dict on why the
         # count must be caller-supplied rather than finding-derived). Disclosed
@@ -1625,14 +1628,7 @@ def _dispatch_diagnose(args) -> None:
         from kento import Instance
         instances_scanned = len(Instance.list())
     else:
-        # Named scope: no typed byte-faithful path — reach the submodule.
-        import importlib
-
-        from kento._diagnosis import diagnosis_from_report
-
-        diagnose_mod = importlib.import_module("kento.diagnose")
-        report = diagnose_mod.run_diagnostics(name)  # raises on unknown name
-        diag = diagnosis_from_report(report)
+        # A named scan visits exactly one resolved instance.
         instances_scanned = 1
 
     if args.as_json:
