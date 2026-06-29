@@ -921,6 +921,19 @@ def _dispatch_create(args, scope: str | None) -> None:
         force=args.force,
     )
     if mode == "vm":
+        # --unprivileged applies to LXC modes only. The typed
+        # `VirtualMachine.create` deliberately has no `unprivileged` param (VMs
+        # have their own isolation), so the flag would otherwise be silently
+        # ignored here. Reject at the CLI edge to restore the pre-re-point hard
+        # error (matches the legacy create.py ModeError; covers vm + pve-vm,
+        # both of which reach this branch via vm scope). _handle maps the
+        # ModeError to "Error: ..." + exit 1.
+        if args.unprivileged:
+            from kento.errors import ModeError
+            raise ModeError(
+                "--unprivileged applies to LXC modes only (VMs have their "
+                "own isolation)."
+            )
         kind.create(args.name, args.image,
                     qemu_args=getattr(args, "qemu_args", None) or (),
                     **common)

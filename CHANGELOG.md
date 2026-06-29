@@ -85,6 +85,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   show the per-orphan `(vmid, mode)` detail, since the typed `ReclaimReport`
   carries targets as plain name strings.
 
+### Fixed
+
+- **`vm create --unprivileged` (and `--pve --unprivileged` = pve-vm) reject
+  again.** The Phase-6 re-point routed VM creates through the typed
+  `VirtualMachine.create`, which has no `unprivileged` parameter (VMs have their
+  own isolation), so the flag was silently ignored instead of erroring. The CLI
+  now rejects `--unprivileged` on VM modes at the edge with a hard error
+  (`Error: --unprivileged applies to LXC modes only (VMs have their own
+  isolation).`, exit 1), restoring the pre-re-point behavior. LXC/PVE-LXC
+  `--unprivileged` is unaffected.
+
 ## [1.6.3] - 2026-06-28
 
 > Sibling-synced with **kento-core 1.6.0.dev4** (re-pinned dependency). The core
