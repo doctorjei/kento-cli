@@ -546,6 +546,45 @@ class TestUnprivilegedFlag:
         call = _run_create(["lxc", "create", "--unprivileged", "myimg"])
         assert call.kwargs["unprivileged"] is True
 
+    def test_lxc_unprivileged_still_calls_through(self):
+        # Item A guard: the LXC reject must NOT touch the LXC path. Confirms
+        # `unprivileged=True` is still threaded to SystemContainer.create.
+        with patch("kento.SystemContainer.create") as msc, \
+             patch("kento.VirtualMachine.create") as mvm:
+            main(["lxc", "create", "--unprivileged", "myimg"])
+        assert msc.called
+        assert not mvm.called
+        assert msc.call_args.kwargs["unprivileged"] is True
+
+    def test_vm_unprivileged_rejected(self, capsys):
+        # Regression (#256): the typed VirtualMachine.create has no
+        # `unprivileged` param, so the flag was silently ignored. The CLI edge
+        # must reject it (exit 1, legacy message) BEFORE calling create.
+        with patch("kento.SystemContainer.create") as msc, \
+             patch("kento.VirtualMachine.create") as mvm:
+            with pytest.raises(SystemExit) as exc:
+                main(["vm", "create", "--unprivileged", "myimg"])
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "--unprivileged applies to LXC modes only" in err
+        assert "VMs have their own isolation" in err
+        # The reject fires before any typed create call.
+        assert not mvm.called
+        assert not msc.called
+
+    def test_pve_vm_unprivileged_rejected(self, capsys):
+        # Same reject covers pve-vm (vm scope + --pve reaches the VM kind).
+        with patch("kento.SystemContainer.create") as msc, \
+             patch("kento.VirtualMachine.create") as mvm:
+            with pytest.raises(SystemExit) as exc:
+                main(["vm", "create", "--pve", "--vmid", "200",
+                      "--unprivileged", "myimg"])
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "--unprivileged applies to LXC modes only" in err
+        assert not mvm.called
+        assert not msc.called
+
 
 class TestTopLevelHelp:
     """Test top-level help includes both lxc and vm groups."""
