@@ -566,6 +566,72 @@ def diagnosis_to_human(diag: "Diagnosis", *, instances_scanned: int) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# images — format the typed ImageRecord ledger (SD3 / §12.4 / §11.8 D2).
+#
+# `kento images` is human-only (no --json contract — nothing scrapes it, D2
+# upheld), so this is a CLI-edge human projection over the typed
+# kento.ImageRecord.list() — NO library string crosses the seam (the former
+# images.list_images() was removed). The output is improved over the old table
+# (it is NOT byte-bound, Jei run 36): an ID column surfaces the content identity
+# the ledger is keyed on, and a dangling (no-tag) image is shown explicitly
+# rather than printing an empty IMAGE cell.
+# --------------------------------------------------------------------------- #
+
+
+def _short_id(digest) -> str:
+    """A short, human-scannable form of a content ``Digest`` (12 hex chars).
+
+    Mirrors podman's short-id convention. ``digest`` is a typed ``kento.Digest``
+    (``algorithm`` + ``encoded``); we show the leading 12 chars of ``encoded``.
+    """
+    return digest.encoded[:12]
+
+
+def images_to_human(records: "list") -> str:
+    """Render ``kento.ImageRecord.list()`` as the human ``kento images`` table.
+
+    ``records`` is a ``list[kento.ImageRecord]`` (typed — classes-only seam).
+    Columns: IMAGE (the tag(s) kento has seen at the id, comma-joined; or
+    ``<dangling>`` when the image carries no surviving tag), ID (short content
+    id — the ledger key), GUESTS (referencing instances, or ``-``), HOLD
+    (``yes``/``no``), STATUS (``in-use``/``orphaned`` — the typed
+    ``ManagedStatus`` value). Empty set => the same "No kento-managed images."
+    line the legacy table emitted.
+    """
+    if not records:
+        return "No kento-managed images."
+
+    rows = []
+    for rec in records:
+        image_cell = ",".join(r.render() for r in rec.refs) if rec.refs \
+            else "<dangling>"
+        guests_cell = ",".join(rec.guests) if rec.guests else "-"
+        hold_cell = "yes" if rec.held else "no"
+        # rec.status is a ManagedStatus (str, Enum) — its value is the wire
+        # string ("in-use"/"orphaned"); str() yields exactly that.
+        rows.append((
+            image_cell,
+            _short_id(rec.id),
+            guests_cell,
+            hold_cell,
+            rec.status.value,
+        ))
+
+    headers = ("IMAGE", "ID", "GUESTS", "HOLD", "STATUS")
+    widths = []
+    for i, header in enumerate(headers):
+        col_max = max((len(row[i]) for row in rows), default=0)
+        widths.append(max(len(header), col_max))
+
+    lines = []
+    lines.append("  ".join(h.ljust(w) for h, w in zip(headers, widths)))
+    lines.append("  ".join("-" * w for w in widths))
+    for row in rows:
+        lines.append("  ".join(val.ljust(w) for val, w in zip(row, widths)))
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
 # Small shared helpers.
 # --------------------------------------------------------------------------- #
 

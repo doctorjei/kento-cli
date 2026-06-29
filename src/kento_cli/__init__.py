@@ -657,22 +657,23 @@ def _dispatch(args, scope: str | None, subcmd: str) -> None:
     elif subcmd == "pull":
         _dispatch_pull(args)
     elif subcmd == "images":
-        # NOT re-pointed onto Image.list() (M21) — DISCLOSED judgment call.
-        # `kento images` reports the kento-MANAGED image accounting (which
-        # guests reference each image, whether a hold pins it, in-use vs
-        # orphaned), built from on-disk guest/hold state. Image.list() is a
-        # DIFFERENT dataset — every podman repository image as an OciImage,
-        # carrying source/id/layers only and NO guest/hold/status data (its own
-        # docstring states it does not wrap list_images). The managed-image
-        # accounting has no typed surface in 1.0, so a faithful, zero-feature-
-        # loss `images` table cannot be projected from the typed objects without
-        # a new kento-core surface (out of scope here — would be a STOP+disclose
-        # kento-core change). list_images() returns a STRING, not a dict, so the
-        # classes-only seam rule (which targets legacy --json DICTS) is not
-        # violated: no dict crosses. Re-pointing `images` onto a typed managed-
-        # image surface is deferred to the lifecycle-EPIC provenance work.
-        from kento.images import list_images
-        print(list_images(in_use_only=args.in_use))
+        # Re-pointed (SD3, JC1) onto the typed managed-image ledger
+        # kento.ImageRecord.list() — the LAST classes-only seam for `images`.
+        # The library no longer renders the table as a string (list_images() was
+        # removed); the CLI formats the typed records here (images_to_human). NO
+        # library string crosses the seam, and NO --json (D2 upheld — `images`
+        # is human-only). The --in-use filter is preserved by FILTERING the typed
+        # list CLI-side (record.in_use), the M21 pattern. Output is improved over
+        # the old table (an ID column + an explicit <dangling> cell — `images` is
+        # not byte-bound, Jei run 36).
+        import kento
+
+        from kento_cli._projection import images_to_human
+
+        records = kento.ImageRecord.list()
+        if args.in_use:
+            records = [r for r in records if r.in_use]
+        print(images_to_human(records))
     elif subcmd == "prune":
         import kento
         from kento import PruneScope

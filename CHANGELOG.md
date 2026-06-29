@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`kento images` now formats the typed `kento-core` `ImageRecord` ledger
+  (closes the last classes-only seam for images).** The command consumes
+  `kento.ImageRecord.list()` (typed records) and renders the human table
+  CLI-side; the library no longer returns a pre-rendered string
+  (`kento.images.list_images()` was removed). No library string crosses the
+  CLI↔library boundary, and there is still **no `images --json`** (the command
+  remains human-only). **Output is improved** (not byte-compatible with prior
+  releases): a new `ID` column surfaces the short content id the ledger is keyed
+  on, and an image with no surviving tag is shown as `<dangling>` rather than an
+  empty `IMAGE` cell. The managed set (images referenced by a guest or pinned by
+  a hold), the `GUESTS`/`HOLD`/`STATUS` columns, the `--in-use` filter, and the
+  `No kento-managed images.` empty line are unchanged; exit code is unchanged.
+
 > Phase 6 of the library re-point: the lifecycle and interactive commands now run
 > through the typed `kento-core` `Instance` API (`start`/`stop`/`destroy`/`scrub`
 > + `attach`/`exec`/`logs`/`suspend`/`resume`). Behavior is preserved except for
