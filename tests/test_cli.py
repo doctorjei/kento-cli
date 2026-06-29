@@ -699,16 +699,36 @@ class TestImagesCommand:
     """Tests for the bare-only 'kento images' command."""
 
     def test_images_dispatches(self):
-        """kento images calls list_images with in_use_only=False."""
-        with patch("kento.images.list_images") as mock_list:
+        """kento images consumes the typed kento.ImageRecord.list() (SD3, JC1)
+        — no library string crosses the seam."""
+        import kento
+        calls = []
+        with patch.object(kento.ImageRecord, "list",
+                          classmethod(lambda cls: calls.append(1) or [])):
             main(["images"])
-        mock_list.assert_called_once_with(in_use_only=False)
+        assert calls == [1]
+        # The removed library string surface stays gone.
+        import kento.images as kimages
+        assert not hasattr(kimages, "list_images")
 
     def test_images_in_use_flag(self):
-        """kento images --in-use sets in_use_only=True."""
-        with patch("kento.images.list_images") as mock_list:
-            main(["images", "--in-use"])
-        mock_list.assert_called_once_with(in_use_only=True)
+        """kento images --in-use filters the typed list CLI-side (record.in_use)."""
+        import kento
+        from kento import Digest, ImageRecord
+        records = [
+            ImageRecord(id=Digest(algorithm="sha256", encoded="a" * 64),
+                        guests=("box",)),
+            ImageRecord(id=Digest(algorithm="sha256", encoded="b" * 64)),
+        ]
+        with patch.object(kento.ImageRecord, "list",
+                          classmethod(lambda cls: list(records))):
+            import io
+            import contextlib
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                main(["images", "--in-use"])
+        out = buf.getvalue()
+        assert "aaaaaaaaaaaa" in out and "bbbbbbbbbbbb" not in out
 
     def test_images_not_under_lxc(self):
         """kento lxc images is not a registered subcommand."""

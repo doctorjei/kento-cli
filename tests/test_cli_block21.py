@@ -79,20 +79,40 @@ class TestOrphanPruneFormatter:
 # --------------------------------------------------------------------------- #
 
 class TestImagesInUse:
+    """`images` re-pointed (SD3, JC1) onto the typed kento.ImageRecord.list();
+    --in-use filters the typed list CLI-side (record.in_use). No library string
+    crosses the seam — the former list_images() was removed."""
 
-    def test_in_use_flag_passed_through(self):
-        import kento.images as kimages
-        with patch.object(kimages, "list_images",
-                          return_value="T") as mock_list:
+    def _rec(self, *, encoded, guests=()):
+        from kento import Digest, ImageRecord
+        return ImageRecord(
+            id=Digest(algorithm="sha256", encoded=encoded), guests=tuple(guests))
+
+    def test_in_use_filters_orphaned_cli_side(self, capsys):
+        import kento
+        records = [
+            self._rec(encoded="a" * 64, guests=["box"]),  # in-use
+            self._rec(encoded="b" * 64),                   # orphaned
+        ]
+        with patch.object(kento.ImageRecord, "list",
+                          classmethod(lambda cls: list(records))):
             cli.main(["images", "--in-use"])
-        mock_list.assert_called_once_with(in_use_only=True)
+        out = capsys.readouterr().out
+        assert "aaaaaaaaaaaa" in out
+        assert "bbbbbbbbbbbb" not in out
 
-    def test_default_not_in_use(self):
-        import kento.images as kimages
-        with patch.object(kimages, "list_images",
-                          return_value="T") as mock_list:
+    def test_default_shows_all(self, capsys):
+        import kento
+        records = [
+            self._rec(encoded="a" * 64, guests=["box"]),
+            self._rec(encoded="b" * 64),
+        ]
+        with patch.object(kento.ImageRecord, "list",
+                          classmethod(lambda cls: list(records))):
             cli.main(["images"])
-        mock_list.assert_called_once_with(in_use_only=False)
+        out = capsys.readouterr().out
+        assert "aaaaaaaaaaaa" in out
+        assert "bbbbbbbbbbbb" in out
 
 
 class TestPullClassesOnly:
