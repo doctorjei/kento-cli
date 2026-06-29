@@ -661,7 +661,7 @@ def _dispatch(args, scope: str | None, subcmd: str) -> None:
         # `kento images` reports the kento-MANAGED image accounting (which
         # guests reference each image, whether a hold pins it, in-use vs
         # orphaned), built from on-disk guest/hold state. Image.list() is a
-        # DIFFERENT dataset — every podman repository image as a LayeredImage,
+        # DIFFERENT dataset — every podman repository image as an OciImage,
         # carrying source/id/layers only and NO guest/hold/status data (its own
         # docstring states it does not wrap list_images). The managed-image
         # accounting has no typed surface in 1.0, so a faithful, zero-feature-
@@ -692,10 +692,10 @@ def _dispatch(args, scope: str | None, subcmd: str) -> None:
         # PVE-instance-orphan GC — both distinct from hold-GC). `--orphans`
         # below is unchanged in intent.
         # Spec §11.5 phrases M19-M23 as `Image.*`, but the abstract `Image` base
-        # is a genuine ABC; the as-built classmethods (pull/list/prune) live on
-        # the concrete `LayeredImage` (the only 1.0 OCI representation — disclosed
-        # placement, _images.py §309-316). Use it directly.
-        report = kento.LayeredImage.prune(scope=PruneScope.DANGLING)
+        # (and the abstract `LayeredImage` layering node) are genuine ABCs; the
+        # as-built classmethods (pull/list/prune) live on the concrete `OciImage`
+        # (the only 1.0 OCI representation — disclosed placement). Use it directly.
+        report = kento.OciImage.prune(scope=PruneScope.DANGLING)
         print(_format_image_prune(report))
         failed = bool(report.failed)
         if args.orphans:
@@ -1716,9 +1716,9 @@ def _dispatch_pull(args) -> None:
     """Pull an OCI image into the local store via the typed library (M19).
 
     Re-pointed (Phase 6) from a raw ``podman pull`` subprocess onto
-    ``kento.LayeredImage.pull(ref)``, which acquires the image and returns a resolved
+    ``kento.OciImage.pull(ref)``, which acquires the image and returns a resolved
     typed handle. CLASSES-ONLY across the seam: the library hands back an
-    ``Image`` (a ``LayeredImage``); the CLI keeps only its rendered ``source``
+    ``Image`` (an ``OciImage``); the CLI keeps only its rendered ``source``
     for the success line and discards the rest.
 
     Behavior deltas vs the old raw subprocess (CHANGELOG'd):
@@ -1742,8 +1742,8 @@ def _dispatch_pull(args) -> None:
 
     kento.require_root()
     # Spec §11.5 phrases this `Image.pull`; the as-built classmethod lives on the
-    # concrete `LayeredImage` (Image is a genuine ABC — _images.py §309-316).
-    image = kento.LayeredImage.pull(args.image)
+    # concrete `OciImage` (Image and LayeredImage are genuine ABCs).
+    image = kento.OciImage.pull(args.image)
     print(f"Pulled {image.source.render()}")
 
 

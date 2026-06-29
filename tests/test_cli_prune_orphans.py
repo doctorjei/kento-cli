@@ -1,12 +1,12 @@
 """CLI wiring for `kento prune --orphans [--yes]` (Phase 6 re-point).
 
-Bare `kento prune` reclaims podman DANGLING images via LayeredImage.prune (M22).
+Bare `kento prune` reclaims podman DANGLING images via OciImage.prune (M22).
 `--orphans` ADDS a separately sectioned orphan-reaping pass routed onto
 Instance.prune_orphans (M4): reap=args.yes (dry-run unless --yes). Both ops
 return a typed ReclaimReport (classes-only seam — no dict crosses); the CLI
 formats the human text at the edge.
 
-LayeredImage.prune is mocked so these tests stay hermetic and assert ONLY the
+OciImage.prune is mocked so these tests stay hermetic and assert ONLY the
 orphan wiring.
 """
 from unittest.mock import patch
@@ -31,7 +31,7 @@ class TestPruneOrphans:
     def test_bare_prune_does_not_touch_orphans(self):
         """kento prune (no --orphans) must NOT call prune_orphans at all."""
         with patch("kento.require_root"), \
-             patch("kento.LayeredImage.prune",
+             patch("kento.OciImage.prune",
                    return_value=_clean_image_report()), \
              patch("kento.Instance.prune_orphans") as reap:
             main(["prune"])
@@ -39,7 +39,7 @@ class TestPruneOrphans:
 
     def test_bare_prune_yes_does_not_touch_orphans(self):
         with patch("kento.require_root"), \
-             patch("kento.LayeredImage.prune",
+             patch("kento.OciImage.prune",
                    return_value=_clean_image_report()), \
              patch("kento.Instance.prune_orphans") as reap:
             main(["prune", "--yes"])
@@ -48,7 +48,7 @@ class TestPruneOrphans:
     def test_orphans_dry_run_lists_but_does_not_reap(self, capsys):
         """prune --orphans (no --yes) calls prune_orphans(reap=False)."""
         with patch("kento.require_root"), \
-             patch("kento.LayeredImage.prune",
+             patch("kento.OciImage.prune",
                    return_value=_clean_image_report()), \
              patch("kento.Instance.prune_orphans",
                    return_value=_orphan_report(dry_run=True)) as reap:
@@ -63,7 +63,7 @@ class TestPruneOrphans:
     def test_orphans_yes_triggers_reap(self, capsys):
         """prune --orphans --yes calls prune_orphans(reap=True)."""
         with patch("kento.require_root"), \
-             patch("kento.LayeredImage.prune",
+             patch("kento.OciImage.prune",
                    return_value=_clean_image_report()), \
              patch("kento.Instance.prune_orphans",
                    return_value=_orphan_report(dry_run=False)) as reap:
@@ -78,7 +78,7 @@ class TestPruneOrphans:
             dry_run=False, reclaimed=(),
             failed=(("ghost", "destroy refused"),))
         with patch("kento.require_root"), \
-             patch("kento.LayeredImage.prune",
+             patch("kento.OciImage.prune",
                    return_value=_clean_image_report()), \
              patch("kento.Instance.prune_orphans", return_value=report):
             with pytest.raises(SystemExit) as exc:
@@ -90,7 +90,7 @@ class TestPruneOrphans:
     def test_orphans_requires_root_before_reaping(self):
         """--orphans still gates on require_root; reap never runs if it fails."""
         with patch("kento.require_root", side_effect=SystemExit(1)) as root, \
-             patch("kento.LayeredImage.prune"), \
+             patch("kento.OciImage.prune"), \
              patch("kento.Instance.prune_orphans") as reap:
             with pytest.raises(SystemExit):
                 main(["prune", "--orphans"])
