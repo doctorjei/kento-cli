@@ -67,6 +67,35 @@ if TYPE_CHECKING:
 
 
 # --------------------------------------------------------------------------- #
+# Humanizers — int wire value -> human display string (CLI-edge only).
+# --------------------------------------------------------------------------- #
+
+
+def _human_bytes(n: int) -> str:
+    """Format a byte count as a short human-readable size for DISPLAY only.
+
+    Used to render the ``upper_size`` int (``Instance.disk_usage()``) in the
+    human ``list`` table and ``info`` text block; the raw int stays on the
+    ``--json`` wire (same pattern as ``vmid``: machine int, formatted for
+    humans). NOT a wire contract — there are no byte-compat fixtures pinning this
+    format, so it does not need to byte-match the old ``du -sh`` output; it only
+    needs to be a clean, readable size.
+
+    1024-based (binary) units B/K/M/G/T/P, one decimal place above bytes (whole
+    bytes for ``< 1K``), e.g. ``0`` -> ``"0B"``, ``4096`` -> ``"4.0K"``,
+    ``5242880`` -> ``"5.0M"``. Mirrors the familiar ``du -h`` style.
+    """
+    if n < 1024:
+        return f"{n}B"
+    value = float(n)
+    for unit in ("K", "M", "G", "T", "P"):
+        value /= 1024.0
+        if value < 1024.0:
+            return f"{value:.1f}{unit}"
+    return f"{value:.1f}E"
+
+
+# --------------------------------------------------------------------------- #
 # info / inspect --json — the OBJECT (info.py:88-193 ground truth).
 # --------------------------------------------------------------------------- #
 
@@ -178,9 +207,13 @@ def instance_to_wire_dict(inst: "Instance", *, verbose: bool = False) -> dict:
     data["lxc_args"] = _read_passthrough_args(container_dir, "kento-lxc-args")
 
     if verbose:
-        upper = state_dir / "upper"
-        if upper.is_dir():
-            data["upper_size"] = _get_size(upper)
+        # upper_size — the ALLOCATED byte size of the overlay upperdir, sourced
+        # from the typed library (Instance.disk_usage()); the CLI no longer
+        # builds the upper path or runs du itself (the Q2 storage-accounting seam
+        # is closed). Always emitted as an int (0 when the upper is absent), for
+        # a stable machine schema — same precedent as the always-emitted
+        # qemu_args/pve_args/lxc_args above. The human renderer humanizes it.
+        data["upper_size"] = inst.disk_usage()
         if layer_paths:
             data["layers"] = layer_paths
             sizes = []
@@ -283,7 +316,10 @@ def _format_human(data: dict, verbose: bool, *,
 
     if verbose:
         if "upper_size" in data:
-            lines.append(f"Upper size: {data['upper_size']}")
+            # data["upper_size"] is the raw int (bytes) that reaches --json;
+            # humanize it for the text block (same pattern as vmid: int on the
+            # wire, formatted for humans).
+            lines.append(f"Upper size: {_human_bytes(data['upper_size'])}")
         if "layers" in data:
             lines.append("Layer paths:")
             layer_sizes = data.get("layer_sizes", [])
@@ -376,13 +412,13 @@ def _instance_to_list_entry(inst: "Instance", *, as_json: bool,
             entry["ssh_host_key_fingerprints"] = fingerprints
 
     if show_size:
-        state_text = _read_meta(container_dir, "kento-state")
-        state_dir = Path(state_text) if state_text else container_dir
-        upper_dir = state_dir / "upper"
-        if upper_dir.is_dir():
-            entry["upper_size"] = _get_size(upper_dir)
-        else:
-            entry["upper_size"] = "0"
+        # upper_size — the ALLOCATED byte size of the overlay upperdir, sourced
+        # from the typed library (Instance.disk_usage()); the CLI no longer
+        # builds the upper path or runs du itself (the Q2 storage-accounting seam
+        # is closed). Always an int (0 when the upper is absent), matching list's
+        # prior always-emit behavior (it emitted "0" before) and giving --json a
+        # stable machine schema. The human table humanizes it.
+        entry["upper_size"] = inst.disk_usage()
 
     return entry
 
@@ -432,7 +468,10 @@ def instances_to_human(insts: "list[Instance]", *,
         return "(no instances found)"
 
     if show_size:
-        rows = [(e["name"], e["mode"], e["image"], e["status"], e["upper_size"])
+        # entry["upper_size"] is the raw int (bytes) that reaches --json;
+        # humanize it for the table column (the int stays on the wire only).
+        rows = [(e["name"], e["mode"], e["image"], e["status"],
+                 _human_bytes(e["upper_size"]))
                 for e in entries]
         headers = ("NAME", "TYPE", "IMAGE", "STATUS", "UPPER SIZE")
     else:
