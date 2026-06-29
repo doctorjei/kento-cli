@@ -1,7 +1,7 @@
 """Block 21 (Phase 6 FINAL) — typed re-point of images/pull/prune/adopt.
 
 Focused tests for the CLASSES-ONLY seam: the CLI consumes typed objects
-(LayeredImage handles, ReclaimReport, Instance handles) and formats human text
+(OciImage handles, ReclaimReport, Instance handles) and formats human text
 at the edge. The ReclaimReport formatters are exercised directly here.
 """
 from unittest.mock import MagicMock, patch
@@ -101,7 +101,7 @@ class TestPullClassesOnly:
         handle = MagicMock()
         handle.source.render.return_value = "registry/x:1"
         with patch("kento.require_root"), \
-             patch("kento.LayeredImage.pull", return_value=handle) as pull:
+             patch("kento.OciImage.pull", return_value=handle) as pull:
             cli.main(["pull", "x:1"])
         pull.assert_called_once_with("x:1")
         assert "Pulled registry/x:1" in capsys.readouterr().out
@@ -115,7 +115,7 @@ class TestPruneBothSectionsAndExit:
                             failed=(("x", "held"),))
         orph = ReclaimReport(dry_run=True, reclaimed=("g",))
         with patch("kento.require_root"), \
-             patch("kento.LayeredImage.prune", return_value=img), \
+             patch("kento.OciImage.prune", return_value=img), \
              patch("kento.Instance.prune_orphans", return_value=orph):
             with pytest.raises(SystemExit) as exc:
                 cli.main(["prune", "--orphans"])
@@ -128,7 +128,7 @@ class TestPruneBothSectionsAndExit:
         img = ReclaimReport(dry_run=False, reclaimed=("a",))
         orph = ReclaimReport(dry_run=True)
         with patch("kento.require_root"), \
-             patch("kento.LayeredImage.prune", return_value=img), \
+             patch("kento.OciImage.prune", return_value=img), \
              patch("kento.Instance.prune_orphans", return_value=orph):
             # No SystemExit on a clean run.
             cli.main(["prune", "--orphans"])

@@ -2,11 +2,11 @@
 
 `images` is NOT re-pointed onto Image.list() (M21) — DISCLOSED judgment call:
 list_images() reports the kento-MANAGED accounting (guest refs / holds /
-in-use), a dataset Image.list() (all podman repo:tags as LayeredImage objects)
+in-use), a dataset Image.list() (all podman repo:tags as OciImage objects)
 does not carry. list_images() returns a STRING (not a dict), so the classes-only
 seam rule — which targets legacy --json DICTS — is not violated.
 
-`prune` IS re-pointed (Phase 6): bare prune -> LayeredImage.prune(DANGLING)
+`prune` IS re-pointed (Phase 6): bare prune -> OciImage.prune(DANGLING)
 (M22) returning a typed ReclaimReport (classes-only seam); --orphans ->
 Instance.prune_orphans (M4). This is a CHANGELOG'd behavior delta (the former
 kento orphan-HOLD GC is replaced by dangling-image GC).
@@ -29,7 +29,7 @@ def test_dispatch_prune_consumes_reclaim_report(capsys, monkeypatch):
     from kento import ReclaimReport
     monkeypatch.setattr(kento, "require_root", lambda: None)
     report = ReclaimReport(dry_run=False, reclaimed=("sha256:aa", "sha256:bb"))
-    monkeypatch.setattr(kento.LayeredImage, "prune",
+    monkeypatch.setattr(kento.OciImage, "prune",
                         classmethod(lambda cls, *, scope: report))
     cli.main(["prune"])
     out = capsys.readouterr().out
@@ -47,7 +47,7 @@ def test_dispatch_prune_exits_nonzero_on_failures(capsys, monkeypatch):
         reclaimed=(),
         failed=(("sha256:held", "image is in use"),),
     )
-    monkeypatch.setattr(kento.LayeredImage, "prune",
+    monkeypatch.setattr(kento.OciImage, "prune",
                         classmethod(lambda cls, *, scope: report))
     with pytest.raises(SystemExit) as exc:
         cli.main(["prune"])

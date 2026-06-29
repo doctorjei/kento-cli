@@ -631,7 +631,7 @@ class TestPullCommand:
         assert exc.value.code != 0
 
     def test_pull_calls_library_and_prints_confirmation(self, capsys):
-        """kento pull <image> calls LayeredImage.pull(ref); prints a confirmation.
+        """kento pull <image> calls OciImage.pull(ref); prints a confirmation.
 
         Re-pointed (Phase 6) onto the typed M19 op. CLASSES-ONLY: the handler
         consumes the returned Image handle (a class) and renders its source.
@@ -639,7 +639,7 @@ class TestPullCommand:
         fake_image = MagicMock()
         fake_image.source.render.return_value = "docker.io/library/alpine:3"
         with patch("kento.require_root"), \
-             patch("kento.LayeredImage.pull",
+             patch("kento.OciImage.pull",
                    return_value=fake_image) as mock_pull:
             main(["pull", "docker.io/library/alpine:3"])
         mock_pull.assert_called_once_with("docker.io/library/alpine:3")
@@ -650,7 +650,7 @@ class TestPullCommand:
         """A pull failure (SubprocessError) maps to exit 1 via _handle."""
         from kento.errors import SubprocessError
         with patch("kento.require_root"), \
-             patch("kento.LayeredImage.pull",
+             patch("kento.OciImage.pull",
                    side_effect=SubprocessError(
                        "failed to pull image (exit 125)", returncode=125)):
             with pytest.raises(SystemExit) as exc:
@@ -676,14 +676,14 @@ class TestPullCommand:
         """Podman absent -> SubprocessError(returncode=None) -> exit 2.
 
         The old handler special-cased FileNotFoundError to exit 2 with its own
-        message; the re-pointed handler lets LayeredImage.pull's run_or_die raise
+        message; the re-pointed handler lets OciImage.pull's run_or_die raise
         a SubprocessError carrying returncode=None for an unlaunchable tool, which
         _exit_code maps to 2 (preserving the exit code) and _handle surfaces as
         'Error: ...' (the message now comes from the library). No traceback.
         """
         from kento.errors import SubprocessError
         with patch("kento.require_root"), \
-             patch("kento.LayeredImage.pull",
+             patch("kento.OciImage.pull",
                    side_effect=SubprocessError(
                        "failed to pull image: podman not found",
                        returncode=None)):
@@ -727,7 +727,7 @@ class TestPruneCommand:
     """Tests for the bare-only 'kento prune' command."""
 
     def test_prune_dispatches_dangling(self):
-        """kento prune calls LayeredImage.prune(scope=DANGLING), requires root.
+        """kento prune calls OciImage.prune(scope=DANGLING), requires root.
 
         Re-pointed (Phase 6): bare prune now reclaims podman DANGLING images
         (M22) rather than the former kento orphan-HOLD GC. Image.prune always
@@ -736,7 +736,7 @@ class TestPruneCommand:
         from kento import PruneScope, ReclaimReport
         report = ReclaimReport(dry_run=False)
         with patch("kento.require_root"), \
-             patch("kento.LayeredImage.prune",
+             patch("kento.OciImage.prune",
                    return_value=report) as mock_prune:
             main(["prune"])
         mock_prune.assert_called_once_with(scope=PruneScope.DANGLING)
@@ -747,7 +747,7 @@ class TestPruneCommand:
         from kento import PruneScope, ReclaimReport
         report = ReclaimReport(dry_run=False)
         with patch("kento.require_root"), \
-             patch("kento.LayeredImage.prune",
+             patch("kento.OciImage.prune",
                    return_value=report) as mock_prune:
             main(["prune", "--yes"])
         mock_prune.assert_called_once_with(scope=PruneScope.DANGLING)
@@ -755,7 +755,7 @@ class TestPruneCommand:
     def test_prune_requires_root(self):
         """kento prune gates on require_root before pruning."""
         with patch("kento.require_root", side_effect=SystemExit(1)) as mock_root, \
-             patch("kento.LayeredImage.prune") as mock_prune:
+             patch("kento.OciImage.prune") as mock_prune:
             with pytest.raises(SystemExit):
                 main(["prune"])
         mock_root.assert_called_once()
