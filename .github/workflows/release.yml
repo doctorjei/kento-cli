@@ -83,9 +83,9 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         run: |
           tag="${GITHUB_REF_NAME}"
-          if ! printf '%s' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?$'; then
+          if ! printf '%s' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+|\.dev[0-9]+)?$'; then
             echo "::error::Invalid release tag '$tag'." \
-              "Tags must match ^v[0-9]+.[0-9]+.[0-9]+(-rcN)?$ (e.g. v1.3.0 or v1.3.0-rc1)."
+              "Tags must match ^v[0-9]+.[0-9]+.[0-9]+(-rcN|.devN)?$ (e.g. v1.3.0, v1.3.0-rc1, or v1.6.3.dev0)."
             exit 1
           fi
           echo "Tag '$tag' is a valid release tag."
@@ -167,6 +167,11 @@ jobs:
         # A release tag may only ship if its version was first cut and tested
         # as an rc. PyPI filenames embed the version, so we rebuild at the final
         # version rather than byte-copying the rc artifact.
+        #
+        # A `.devN` tag is itself a pre-release: it has no separate rc and
+        # publishes directly, so the rc gate is BYPASSED for `.dev` versions
+        # (synced .devN line with kento-core; see [[versioning-synced-dev-line]]).
+        if: ${{ !contains(github.ref_name, '.dev') }}
         run: |
           ver="${GITHUB_REF_NAME}"
           rc_tags="$(git tag -l "${ver}-rc*")"
