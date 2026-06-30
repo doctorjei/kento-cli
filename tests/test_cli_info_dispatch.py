@@ -68,8 +68,9 @@ def test_dispatch_info_json_branch_and_verbose(capsys, monkeypatch):
     _stub_get(monkeypatch)
     seen = {}
 
-    def fake_json(inst, *, verbose=False):
+    def fake_json(inst, *, verbose=False, warnings=None):
         seen["verbose"] = verbose
+        seen["warnings"] = warnings
         return "JSON-INFO"
 
     monkeypatch.setattr(cli._projection, "instance_to_json", fake_json)

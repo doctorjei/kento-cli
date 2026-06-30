@@ -238,13 +238,28 @@ def instance_to_wire_dict(inst: "Instance", *, verbose: bool = False) -> dict:
     return data
 
 
-def instance_to_json(inst: "Instance", *, verbose: bool = False) -> str:
+def instance_to_json(
+    inst: "Instance",
+    *,
+    verbose: bool = False,
+    warnings: "list[dict] | None" = None,
+) -> str:
     """The ``info``/``inspect --json`` string — ``json.dumps(..., indent=2)``.
 
     Matches ``info.info(..., as_json=True)`` exactly (indent=2, no sort_keys —
     insertion order is the wire order).
+
+    ``warnings`` (Result-sweep S7) is the CLI-edge ``Result`` warnings array
+    (``[{kind, message, context}, …]``). It is APPENDED as a top-level
+    ``"warnings"`` key ONLY when non-empty — a clean command omits the key so the
+    wire stays byte-identical to the legacy output (the golden fixtures, and the
+    seadog contract for warning-free commands, are preserved). The key is added
+    LAST so the existing field order is untouched.
     """
-    return json.dumps(instance_to_wire_dict(inst, verbose=verbose), indent=2)
+    data = instance_to_wire_dict(inst, verbose=verbose)
+    if warnings:
+        data["warnings"] = warnings
+    return json.dumps(data, indent=2)
 
 
 def instance_to_human(inst: "Instance", *, verbose: bool = False) -> str:
@@ -587,17 +602,27 @@ def diagnosis_to_wire_dict(diag: "Diagnosis", *, instances_scanned: int) -> dict
     }
 
 
-def diagnosis_to_json(diag: "Diagnosis", *, instances_scanned: int) -> str:
+def diagnosis_to_json(
+    diag: "Diagnosis",
+    *,
+    instances_scanned: int,
+    warnings: "list[dict] | None" = None,
+) -> str:
     """The ``diagnose --json`` string — ``json.dumps(..., indent=2)``.
 
     Byte-identical to the legacy ``json.dumps(report, indent=2)`` the CLI emits
     today (insertion order; ``remediation: null`` for ``None``).
     ``instances_scanned`` is caller-supplied (see :func:`diagnosis_to_wire_dict`).
+
+    ``warnings`` (Result-sweep S7) — the ``Result``'s warnings array — is appended
+    as a top-level ``"warnings"`` key ONLY when non-empty (a clean scan omits it,
+    so the legacy wire is byte-identical). NOTE these are ``Result`` CONDITIONS,
+    distinct from the scan's degraded *findings* (those ride in ``checks``).
     """
-    return json.dumps(
-        diagnosis_to_wire_dict(diag, instances_scanned=instances_scanned),
-        indent=2,
-    )
+    data = diagnosis_to_wire_dict(diag, instances_scanned=instances_scanned)
+    if warnings:
+        data["warnings"] = warnings
+    return json.dumps(data, indent=2)
 
 
 def diagnosis_to_human(diag: "Diagnosis", *, instances_scanned: int) -> str:
