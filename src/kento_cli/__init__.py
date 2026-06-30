@@ -723,7 +723,10 @@ def _dispatch(args, scope: str | None, subcmd: str) -> None:
             # reap=args.yes -> dry-run unless --yes (the ReclaimReport's dry_run
             # mirrors that). Heavier blast radius (discards instance state), so
             # it stays a separately sectioned, opt-in pass.
-            orphans = kento.Instance.prune_orphans(reap=args.yes)
+            # S6 (Result sweep): prune_orphans() returns a Result; .unwrap()
+            # until S7 flips _handle to consume Result. Per-orphan reap failures
+            # still ride in the report's `failed` (a dry-run/normal pass is Ok).
+            orphans = kento.Instance.prune_orphans(reap=args.yes).unwrap()
             print()
             print(_format_orphan_prune(orphans))
             failed = failed or bool(orphans.failed)
@@ -743,7 +746,9 @@ def _dispatch(args, scope: str | None, subcmd: str) -> None:
         # success line from the handle's public properties — name and the PVE
         # vmid (platform_profile.mid; always present on an adopted PVE instance,
         # since adopt is pve-lxc/pve-vm only and fails closed otherwise).
-        inst = kento.Instance.adopt(args.name)
+        # S6 (Result sweep): adopt() returns a Result; .unwrap() until S7 flips
+        # _handle to consume Result (an Error -> ResultError, caught by _handle).
+        inst = kento.Instance.adopt(args.name).unwrap()
         print(f"adopted '{inst.name}' (vmid {inst.platform_profile.mid}); "
               f"run 'kento start {inst.name}'")
 
@@ -1677,7 +1682,11 @@ def _dispatch_diagnose(args) -> None:
     name = getattr(args, "name", None) or None
 
     import kento
-    diag = kento.diagnose(name=name)  # raises InstanceNotFoundError on a miss
+    # S6 (Result sweep): diagnose() returns a Result; .unwrap() until S7 flips
+    # _handle to consume Result. A scoped miss -> Error(INSTANCE_NOT_FOUND) ->
+    # ResultError (a KentoError) on unwrap, caught by _handle -> identical wire.
+    # The scan's degraded findings ride INSIDE the Ok(Diagnosis), not as errors.
+    diag = kento.diagnose(name=name).unwrap()  # ResultError on a scoped miss
 
     if name is None:
         # The host-wide enumeration count (matches run_diagnostics(None)'s

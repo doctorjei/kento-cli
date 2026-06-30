@@ -49,8 +49,10 @@ def _problem_report():
 
 
 def _typed(report):
+    # S6 (Result sweep): kento.diagnose() returns a Result; the success stub
+    # wraps the projected Diagnosis in Ok (the CLI handler .unwrap()s it).
     from kento._diagnosis import diagnosis_from_report
-    return diagnosis_from_report(report)
+    return Ok(value=diagnosis_from_report(report))
 
 
 # --------------------------------------------------------------------------- #
@@ -155,10 +157,17 @@ def test_diagnose_name_problems_exit_1(capsys, monkeypatch):
 
 
 def test_diagnose_unknown_name_errors_exit_1(capsys, monkeypatch):
-    from kento import InstanceNotFoundError
+    # S6 (Result sweep): a scoped miss is now an Error(INSTANCE_NOT_FOUND); the
+    # CLI .unwrap()s it -> ResultError (a KentoError) -> _handle -> "Error: ..."
+    # + exit 1 (byte-identical wire; message preserved).
+    from kento import ConditionKind, Condition, Error, Severity
 
     def boom(name=None):
-        raise InstanceNotFoundError("no instance named 'ghost'.")
+        return Error(conditions=(Condition(
+            severity=Severity.ERROR,
+            kind=ConditionKind.INSTANCE_NOT_FOUND,
+            message="no instance named 'ghost'.",
+            context={}),))
 
     monkeypatch.setattr(kento, "diagnose", boom)
     with pytest.raises(SystemExit) as exc:
