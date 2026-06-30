@@ -23,8 +23,12 @@ def _patch_lxc(inst):
 
 
 def _inst(lines=()):
+    # The S3-converted SystemContainer.logs returns Result[Iterator[str]]; the
+    # CLI .unwrap()s it (behavior-preserving until S7). The mock returns
+    # Ok(<iterator>).
+    from kento import Ok
     inst = MagicMock()
-    inst.logs.return_value = iter(lines)
+    inst.logs.return_value = Ok(value=iter(lines))
     return inst
 
 

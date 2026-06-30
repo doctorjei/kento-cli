@@ -19,8 +19,11 @@ def _patch_lxc(inst):
 
 
 def _inst(exit_code=0):
+    # The S3-converted SystemContainer.exec returns Result[int]; the CLI
+    # .unwrap()s it (behavior-preserving until S7). The mock returns Ok(code).
+    from kento import Ok
     inst = MagicMock()
-    inst.exec.return_value = exit_code
+    inst.exec.return_value = Ok(value=exit_code)
     return inst
 
 
