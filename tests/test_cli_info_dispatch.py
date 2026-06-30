@@ -17,7 +17,12 @@ from kento_cli import _projection  # noqa: F401  (register cli._projection)
 
 def _stub_get(monkeypatch, *, captured=None):
     """Stub the three get() entry points to return a sentinel, recording which
-    class was used and the name passed."""
+    class was used and the name passed.
+
+    S4 (Result sweep): get() now returns a Result, and the CLI .unwrap()s it, so
+    the stub wraps the sentinel in Ok (the resolver still hands back the sentinel
+    instance after unwrap)."""
+    from kento import Ok
     sentinel = object()
 
     def make(cls_label):
@@ -25,7 +30,7 @@ def _stub_get(monkeypatch, *, captured=None):
             if captured is not None:
                 captured["cls"] = cls_label
                 captured["name"] = name
-            return sentinel
+            return Ok(value=sentinel)
         return fake_get
 
     monkeypatch.setattr(kento.Instance, "get", classmethod(
@@ -94,15 +99,23 @@ def test_dispatch_info_scope_maps_to_class(capsys, monkeypatch):
 
 
 def test_dispatch_info_not_found_errors_exit_1(capsys, monkeypatch):
-    from kento import InstanceNotFoundError
+    # S4 (Result sweep): a miss is now Error(INSTANCE_NOT_FOUND), and the CLI
+    # _resolve_instance .unwrap()s it -> ResultError (a KentoError) carrying the
+    # same message -> _handle -> exit 1. Faithful to real get behavior (returns an
+    # Error value; it does NOT raise).
+    from kento import ConditionKind, Condition, Error, Severity
 
     monkeypatch.setattr(kento, "require_root", lambda: None)
     monkeypatch.setattr(kento, "validate_name", lambda *a, **k: None)
 
-    def boom(cls, name):
-        raise InstanceNotFoundError("no instance named 'ghost'.")
+    def miss(cls, name):
+        return Error(conditions=(Condition(
+            severity=Severity.ERROR,
+            kind=ConditionKind.INSTANCE_NOT_FOUND,
+            message="no instance named 'ghost'.",
+        ),))
 
-    monkeypatch.setattr(kento.Instance, "get", classmethod(boom))
+    monkeypatch.setattr(kento.Instance, "get", classmethod(miss))
     with pytest.raises(SystemExit) as exc:
         main(["info", "ghost"])
     assert exc.value.code == 1

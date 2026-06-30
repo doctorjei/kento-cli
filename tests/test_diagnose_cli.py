@@ -26,6 +26,7 @@ import json
 import pytest
 
 import kento
+from kento import Ok  # S4: Instance.list() returns Result; stubs wrap in Ok
 import kento_cli as cli
 from kento_cli import _projection  # noqa: F401  (register cli._projection)
 
@@ -69,7 +70,7 @@ def test_diagnose_no_name_uses_module_function(capsys, monkeypatch):
 
     monkeypatch.setattr(kento, "diagnose", fake_diagnose)
     monkeypatch.setattr(kento.Instance, "list",
-                        classmethod(lambda cls: [object(), object()]))
+                        classmethod(lambda cls: Ok(value=[object(), object()])))
     monkeypatch.setattr(cli._projection, "diagnosis_to_human",
                         lambda diag, *, instances_scanned: f"H:{instances_scanned}")
     with pytest.raises(SystemExit) as exc:
@@ -85,7 +86,7 @@ def test_diagnose_no_name_json_branch_and_exit_1(capsys, monkeypatch):
     monkeypatch.setattr(kento, "diagnose",
                         lambda name=None: _typed(_problem_report()))
     monkeypatch.setattr(kento.Instance, "list",
-                        classmethod(lambda cls: [object(), object()]))
+                        classmethod(lambda cls: Ok(value=[object(), object()])))
     monkeypatch.setattr(cli._projection, "diagnosis_to_human",
                         lambda *a, **k: pytest.fail("human path used on --json"))
     with pytest.raises(SystemExit) as exc:
@@ -183,7 +184,7 @@ def test_diagnose_no_name_json_byte_identical_to_legacy(capsys, monkeypatch):
     # kento.diagnose() runs the real submodule call internally; with run_diagnostics
     # stubbed it sees `report`. Instance.list() must agree on the count (2).
     monkeypatch.setattr(kento.Instance, "list",
-                        classmethod(lambda cls: [object(), object()]))
+                        classmethod(lambda cls: Ok(value=[object(), object()])))
     with pytest.raises(SystemExit):
         cli.main(["diagnose", "--json"])
     out = capsys.readouterr().out
