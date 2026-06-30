@@ -21,7 +21,8 @@ def _rec(*, encoded, refs=(), guests=(), holds=()):
 
     return ImageRecord(
         id=Digest(algorithm="sha256", encoded=encoded),
-        refs=tuple(OciReference.parse(r) for r in refs),
+        # OciReference.parse returns a Result (P1) — .unwrap() to the typed ref.
+        refs=tuple(OciReference.parse(r).unwrap() for r in refs),
         guests=tuple(guests),
         holds=tuple(holds),
     )
@@ -34,7 +35,7 @@ def test_dispatch_images_uses_typed_ledger_not_string(capsys, monkeypatch):
 
     records = [_rec(encoded="a" * 64, refs=["imagea:latest"], guests=["box"])]
     monkeypatch.setattr(kento.ImageRecord, "list",
-                        classmethod(lambda cls: list(records)))
+                        classmethod(lambda cls: kento.Ok(value=list(records))))
     cli.main(["images"])
     out = capsys.readouterr().out
     # The CLI formats the typed record into the table: the ref, the short id,
@@ -57,7 +58,7 @@ def test_dispatch_images_in_use_filters_orphaned(capsys, monkeypatch):
         _rec(encoded="b" * 64, refs=["imageb:latest"]),  # orphaned, no guest
     ]
     monkeypatch.setattr(kento.ImageRecord, "list",
-                        classmethod(lambda cls: list(records)))
+                        classmethod(lambda cls: kento.Ok(value=list(records))))
     cli.main(["images", "--in-use"])
     out = capsys.readouterr().out
     assert "imagea:latest" in out
@@ -68,7 +69,8 @@ def test_dispatch_images_empty(capsys, monkeypatch):
     """No managed images => the legacy 'No kento-managed images.' line."""
     import kento
 
-    monkeypatch.setattr(kento.ImageRecord, "list", classmethod(lambda cls: []))
+    monkeypatch.setattr(kento.ImageRecord, "list",
+                        classmethod(lambda cls: kento.Ok(value=[])))
     cli.main(["images"])
     assert "No kento-managed images." in capsys.readouterr().out
 
@@ -80,7 +82,7 @@ def test_dispatch_prune_consumes_reclaim_report(capsys, monkeypatch):
     monkeypatch.setattr(kento, "require_root", lambda: None)
     report = ReclaimReport(dry_run=False, reclaimed=("sha256:aa", "sha256:bb"))
     monkeypatch.setattr(kento.OciImage, "prune",
-                        classmethod(lambda cls, *, scope: report))
+                        classmethod(lambda cls, *, scope: kento.Ok(value=report)))
     cli.main(["prune"])
     out = capsys.readouterr().out
     assert "Removed 2 dangling image(s)." in out
@@ -98,7 +100,7 @@ def test_dispatch_prune_exits_nonzero_on_failures(capsys, monkeypatch):
         failed=(("sha256:held", "image is in use"),),
     )
     monkeypatch.setattr(kento.OciImage, "prune",
-                        classmethod(lambda cls, *, scope: report))
+                        classmethod(lambda cls, *, scope: kento.Ok(value=report)))
     with pytest.raises(SystemExit) as exc:
         cli.main(["prune"])
     assert exc.value.code == 1

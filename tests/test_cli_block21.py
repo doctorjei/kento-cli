@@ -95,7 +95,7 @@ class TestImagesInUse:
             self._rec(encoded="b" * 64),                   # orphaned
         ]
         with patch.object(kento.ImageRecord, "list",
-                          classmethod(lambda cls: list(records))):
+                          classmethod(lambda cls: kento.Ok(value=list(records)))):
             cli.main(["images", "--in-use"])
         out = capsys.readouterr().out
         assert "aaaaaaaaaaaa" in out
@@ -108,7 +108,7 @@ class TestImagesInUse:
             self._rec(encoded="b" * 64),
         ]
         with patch.object(kento.ImageRecord, "list",
-                          classmethod(lambda cls: list(records))):
+                          classmethod(lambda cls: kento.Ok(value=list(records)))):
             cli.main(["images"])
         out = capsys.readouterr().out
         assert "aaaaaaaaaaaa" in out
@@ -118,10 +118,12 @@ class TestImagesInUse:
 class TestPullClassesOnly:
 
     def test_pull_consumes_handle_renders_source(self, capsys):
+        import kento
         handle = MagicMock()
         handle.source.render.return_value = "registry/x:1"
         with patch("kento.require_root"), \
-             patch("kento.OciImage.pull", return_value=handle) as pull:
+             patch("kento.OciImage.pull",
+                   return_value=kento.Ok(value=handle)) as pull:
             cli.main(["pull", "x:1"])
         pull.assert_called_once_with("x:1")
         assert "Pulled registry/x:1" in capsys.readouterr().out
@@ -135,7 +137,8 @@ class TestPruneBothSectionsAndExit:
                             failed=(("x", "held"),))
         orph = ReclaimReport(dry_run=True, reclaimed=("g",))
         with patch("kento.require_root"), \
-             patch("kento.OciImage.prune", return_value=img), \
+             patch("kento.OciImage.prune",
+                   return_value=__import__("kento").Ok(value=img)), \
              patch("kento.Instance.prune_orphans", return_value=orph):
             with pytest.raises(SystemExit) as exc:
                 cli.main(["prune", "--orphans"])
@@ -148,7 +151,8 @@ class TestPruneBothSectionsAndExit:
         img = ReclaimReport(dry_run=False, reclaimed=("a",))
         orph = ReclaimReport(dry_run=True)
         with patch("kento.require_root"), \
-             patch("kento.OciImage.prune", return_value=img), \
+             patch("kento.OciImage.prune",
+                   return_value=__import__("kento").Ok(value=img)), \
              patch("kento.Instance.prune_orphans", return_value=orph):
             # No SystemExit on a clean run.
             cli.main(["prune", "--orphans"])

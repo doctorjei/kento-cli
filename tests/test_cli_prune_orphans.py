@@ -32,7 +32,8 @@ class TestPruneOrphans:
         """kento prune (no --orphans) must NOT call prune_orphans at all."""
         with patch("kento.require_root"), \
              patch("kento.OciImage.prune",
-                   return_value=_clean_image_report()), \
+                   return_value=__import__("kento").Ok(
+                       value=_clean_image_report())), \
              patch("kento.Instance.prune_orphans") as reap:
             main(["prune"])
         reap.assert_not_called()
@@ -40,7 +41,8 @@ class TestPruneOrphans:
     def test_bare_prune_yes_does_not_touch_orphans(self):
         with patch("kento.require_root"), \
              patch("kento.OciImage.prune",
-                   return_value=_clean_image_report()), \
+                   return_value=__import__("kento").Ok(
+                       value=_clean_image_report())), \
              patch("kento.Instance.prune_orphans") as reap:
             main(["prune", "--yes"])
         reap.assert_not_called()
@@ -49,7 +51,8 @@ class TestPruneOrphans:
         """prune --orphans (no --yes) calls prune_orphans(reap=False)."""
         with patch("kento.require_root"), \
              patch("kento.OciImage.prune",
-                   return_value=_clean_image_report()), \
+                   return_value=__import__("kento").Ok(
+                       value=_clean_image_report())), \
              patch("kento.Instance.prune_orphans",
                    return_value=_orphan_report(dry_run=True)) as reap:
             main(["prune", "--orphans"])
@@ -64,7 +67,8 @@ class TestPruneOrphans:
         """prune --orphans --yes calls prune_orphans(reap=True)."""
         with patch("kento.require_root"), \
              patch("kento.OciImage.prune",
-                   return_value=_clean_image_report()), \
+                   return_value=__import__("kento").Ok(
+                       value=_clean_image_report())), \
              patch("kento.Instance.prune_orphans",
                    return_value=_orphan_report(dry_run=False)) as reap:
             main(["prune", "--orphans", "--yes"])
@@ -79,7 +83,8 @@ class TestPruneOrphans:
             failed=(("ghost", "destroy refused"),))
         with patch("kento.require_root"), \
              patch("kento.OciImage.prune",
-                   return_value=_clean_image_report()), \
+                   return_value=__import__("kento").Ok(
+                       value=_clean_image_report())), \
              patch("kento.Instance.prune_orphans", return_value=report):
             with pytest.raises(SystemExit) as exc:
                 main(["prune", "--orphans", "--yes"])
