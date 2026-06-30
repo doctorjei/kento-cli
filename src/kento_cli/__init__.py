@@ -1134,12 +1134,12 @@ def _dispatch_multi(args, scope: str | None, subcmd: str) -> None:
             inst = _resolve_instance(container_name, scope)
 
             if subcmd == "start":
-                inst.start()
+                inst.start().unwrap()
             elif subcmd in ("shutdown", "stop"):
                 force, timeout = _stop_args(args)
-                inst.stop(timeout=timeout, force=force)
+                inst.stop(timeout=timeout, force=force).unwrap()
             elif subcmd in ("destroy", "rm"):
-                inst.destroy(force=args.force)
+                inst.destroy(force=args.force).unwrap()
             elif subcmd == "scrub":
                 inst.scrub()
         except KentoError as exc:
@@ -1239,7 +1239,7 @@ def _dispatch_attach(args, scope: str | None) -> None:
     from kento import validate_name
     validate_name(args.name)
     inst = _resolve_instance(args.name, scope)
-    inst.attach()
+    inst.attach().unwrap()
 
 
 def _dispatch_set(args, scope: str | None) -> None:
@@ -1514,14 +1514,14 @@ def _dispatch_suspend(args, scope: str | None) -> None:
     """Re-pointed ``suspend`` onto ``VirtualMachine.suspend`` (M17, §11.4)."""
     from kento import validate_name
     validate_name(args.name)
-    _resolve_vm(args.name, scope).suspend()
+    _resolve_vm(args.name, scope).suspend().unwrap()
 
 
 def _dispatch_resume(args, scope: str | None) -> None:
     """Re-pointed ``resume`` onto ``VirtualMachine.resume`` (M18, §11.4)."""
     from kento import validate_name
     validate_name(args.name)
-    _resolve_vm(args.name, scope).resume()
+    _resolve_vm(args.name, scope).resume().unwrap()
 
 
 def _dispatch_exec(args, scope: str | None) -> None:
@@ -1543,7 +1543,7 @@ def _dispatch_exec(args, scope: str | None) -> None:
     if command and command[0] == "--":
         command = command[1:]
     inst = _resolve_lxc(args.name, scope, what="exec")
-    sys.exit(inst.exec(command))
+    sys.exit(inst.exec(command).unwrap())
 
 
 def _resolve_lxc(name: str, scope: str | None, *, what: str):
@@ -1589,7 +1589,7 @@ def _dispatch_logs(args, scope: str | None) -> None:
     if extra and extra[0] == "--":
         extra = extra[1:]
     inst = _resolve_lxc(args.name, scope, what="logs")
-    for line in inst.logs(args=extra):
+    for line in inst.logs(args=extra).unwrap():
         # Each yielded line is already newline-free (the streamer splits on
         # newlines); print restores the newline. Flush per line so a live
         # `-f` tail appears immediately rather than buffered.

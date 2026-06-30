@@ -68,8 +68,11 @@ class TestCliRouting:
         """EXIT-CODE DELTA: typed attach() -> None, so a clean detach exits 0
         regardless of the wrapped tool's exit code (legacy propagated it)."""
         from kento_cli import main
+        from kento import Ok
         inst = MagicMock()
-        inst.attach.return_value = None
+        # S3: attach() now returns Result[None]; the CLI .unwrap()s it. A clean
+        # detach is Ok(None) -> unwrap() yields None, command exits 0.
+        inst.attach.return_value = Ok(value=None)
         ctx, _ = _patch_resolve(inst)
         with ctx:
             # No SystemExit(nonzero): the command completes and returns normally.
