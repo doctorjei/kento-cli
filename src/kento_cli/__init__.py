@@ -682,7 +682,10 @@ def _dispatch(args, scope: str | None, subcmd: str) -> None:
 
         from kento_cli._projection import images_to_human
 
-        records = kento.ImageRecord.list()
+        # S2 (Result sweep): ImageRecord.list() returns a Result; .unwrap() until
+        # S7 flips _handle to consume Result (Error -> ResultError, a KentoError,
+        # caught by the existing _handle -> identical "Error: ..." + exit code).
+        records = kento.ImageRecord.list().unwrap()
         if args.in_use:
             records = [r for r in records if r.in_use]
         print(images_to_human(records))
@@ -708,7 +711,11 @@ def _dispatch(args, scope: str | None, subcmd: str) -> None:
         # (and the abstract `LayeredImage` layering node) are genuine ABCs; the
         # as-built classmethods (pull/list/prune) live on the concrete `OciImage`
         # (the only 1.0 OCI representation — disclosed placement). Use it directly.
-        report = kento.OciImage.prune(scope=PruneScope.DANGLING)
+        # S2 (Result sweep): OciImage.prune() returns a Result; .unwrap() until S7
+        # flips _handle to consume Result (an enumeration-query failure becomes an
+        # Error -> ResultError, a KentoError, caught by _handle -> identical
+        # output; per-image rmi refusals still ride in the report's `failed`).
+        report = kento.OciImage.prune(scope=PruneScope.DANGLING).unwrap()
         print(_format_image_prune(report))
         failed = bool(report.failed)
         if args.orphans:
@@ -1772,7 +1779,11 @@ def _dispatch_pull(args) -> None:
     kento.require_root()
     # Spec §11.5 phrases this `Image.pull`; the as-built classmethod lives on the
     # concrete `OciImage` (Image and LayeredImage are genuine ABCs).
-    image = kento.OciImage.pull(args.image)
+    # S2 (Result sweep): OciImage.pull() returns a Result; .unwrap() until S7
+    # flips _handle to consume Result (Error -> ResultError, a KentoError, caught
+    # by the existing _handle -> identical "Error: ..." + exit code, including the
+    # podman-absent exit 2 from SubprocessError.returncode is None).
+    image = kento.OciImage.pull(args.image).unwrap()
     print(f"Pulled {image.source.render()}")
 
 

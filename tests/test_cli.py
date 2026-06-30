@@ -636,11 +636,13 @@ class TestPullCommand:
         Re-pointed (Phase 6) onto the typed M19 op. CLASSES-ONLY: the handler
         consumes the returned Image handle (a class) and renders its source.
         """
+        import kento
         fake_image = MagicMock()
         fake_image.source.render.return_value = "docker.io/library/alpine:3"
+        # S2 (Result sweep): pull() returns a Result; the CLI .unwrap()s it.
         with patch("kento.require_root"), \
              patch("kento.OciImage.pull",
-                   return_value=fake_image) as mock_pull:
+                   return_value=kento.Ok(value=fake_image)) as mock_pull:
             main(["pull", "docker.io/library/alpine:3"])
         mock_pull.assert_called_once_with("docker.io/library/alpine:3")
         out = capsys.readouterr().out
@@ -703,8 +705,10 @@ class TestImagesCommand:
         — no library string crosses the seam."""
         import kento
         calls = []
+        # S2: ImageRecord.list() returns a Result; the CLI .unwrap()s it.
         with patch.object(kento.ImageRecord, "list",
-                          classmethod(lambda cls: calls.append(1) or [])):
+                          classmethod(
+                              lambda cls: calls.append(1) or kento.Ok(value=[]))):
             main(["images"])
         assert calls == [1]
         # The removed library string surface stays gone.
@@ -721,7 +725,7 @@ class TestImagesCommand:
             ImageRecord(id=Digest(algorithm="sha256", encoded="b" * 64)),
         ]
         with patch.object(kento.ImageRecord, "list",
-                          classmethod(lambda cls: list(records))):
+                          classmethod(lambda cls: kento.Ok(value=list(records)))):
             import io
             import contextlib
             buf = io.StringIO()
@@ -754,10 +758,12 @@ class TestPruneCommand:
         EXECUTES (no dry_run), so --yes does not gate the image pass.
         """
         from kento import PruneScope, ReclaimReport
+        import kento
         report = ReclaimReport(dry_run=False)
+        # S2: prune() returns a Result; the CLI .unwrap()s it.
         with patch("kento.require_root"), \
              patch("kento.OciImage.prune",
-                   return_value=report) as mock_prune:
+                   return_value=kento.Ok(value=report)) as mock_prune:
             main(["prune"])
         mock_prune.assert_called_once_with(scope=PruneScope.DANGLING)
 
@@ -765,10 +771,12 @@ class TestPruneCommand:
         """kento prune --yes still targets dangling images (image prune has no
         dry-run; --yes only affects the opt-in --orphans pass)."""
         from kento import PruneScope, ReclaimReport
+        import kento
         report = ReclaimReport(dry_run=False)
+        # S2: prune() returns a Result; the CLI .unwrap()s it.
         with patch("kento.require_root"), \
              patch("kento.OciImage.prune",
-                   return_value=report) as mock_prune:
+                   return_value=kento.Ok(value=report)) as mock_prune:
             main(["prune", "--yes"])
         mock_prune.assert_called_once_with(scope=PruneScope.DANGLING)
 
