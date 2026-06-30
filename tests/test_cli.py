@@ -124,6 +124,44 @@ def _run_create(argv):
     return mvm.call_args
 
 
+def _create_error(kind, message):
+    """An Error Result for a failed core create (Block S5 CLI .unwrap() path)."""
+    from kento import Error, Condition, ConditionKind, Severity
+    return Error(
+        conditions=(
+            Condition(severity=Severity.ERROR,
+                      kind=getattr(ConditionKind, kind), message=message),
+        ),
+    )
+
+
+def test_lxc_create_error_result_surfaces_via_handle(capsys):
+    # Block S5: kind.create now returns a Result; _dispatch_create .unwrap()s it
+    # so a create that returns Error RAISES (ResultError, a KentoError), caught
+    # by the existing _handle -> "Error: <msg>" + exit 1. Mutation: dropping the
+    # LXC-branch .unwrap() leaves the Error unraised -> no SystemExit -> reddens.
+    err = _create_error("INSTANCE_EXISTS", "box already exists")
+    with patch("kento.SystemContainer.create", return_value=err), \
+         patch("kento.VirtualMachine.create") as mvm, \
+         pytest.raises(SystemExit) as exc:
+        main(["lxc", "create", "--name", "box", "debian:12"])
+    assert exc.value.code == 1
+    assert "Error: box already exists" in capsys.readouterr().err
+    assert not mvm.called
+
+
+def test_vm_create_error_result_surfaces_via_handle(capsys):
+    # Same for the VM branch (its own .unwrap() call site).
+    err = _create_error("SUBPROCESS_FAILED", "qm create failed")
+    with patch("kento.VirtualMachine.create", return_value=err), \
+         patch("kento.SystemContainer.create") as msc, \
+         pytest.raises(SystemExit) as exc:
+        main(["vm", "create", "--name", "vm1", "debian:12"])
+    assert exc.value.code == 1
+    assert "Error: qm create failed" in capsys.readouterr().err
+    assert not msc.called
+
+
 def test_help(capsys):
     with pytest.raises(SystemExit) as exc:
         main(["--help"])
