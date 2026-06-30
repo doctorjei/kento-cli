@@ -348,7 +348,9 @@ def _load_all(lxc_base: Path, vm_base: Path, *, running: bool = False,
          mock.patch("kento.VM_BASE", vm_base), \
          mock.patch("kento.is_running", return_value=running), \
          mock.patch("kento.pve_config_exists", return_value=pve_config):
-        return kento.Instance.list()
+        # S4 (Result sweep): Instance.list() returns Result; .unwrap() to the list
+        # the projection consumes (mirrors the CLI's _dispatch_list .unwrap()).
+        return kento.Instance.list().unwrap()
 
 
 def test_list_empty_human(tmp_path):

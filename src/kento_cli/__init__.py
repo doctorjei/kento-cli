@@ -1214,14 +1214,18 @@ def _resolve_instance(name: str, scope: str | None):
     ``"vm"`` -> ``VirtualMachine``. Raises ``InstanceNotFoundError`` on a miss or
     a kind mismatch.
     """
+    # S4 (Result sweep): Instance.get/SystemContainer.get/VirtualMachine.get now
+    # return a Result; .unwrap() until S7 flips _handle to consume Result. A miss
+    # is Error(INSTANCE_NOT_FOUND) whose .unwrap() raises ResultError (a
+    # KentoError) with the same message -> caught by _handle -> identical output.
     if scope == "lxc":
         from kento import SystemContainer
-        return SystemContainer.get(name)
+        return SystemContainer.get(name).unwrap()
     if scope == "vm":
         from kento import VirtualMachine
-        return VirtualMachine.get(name)
+        return VirtualMachine.get(name).unwrap()
     from kento import Instance
-    return Instance.get(name)
+    return Instance.get(name).unwrap()
 
 
 def _dispatch_attach(args, scope: str | None) -> None:
@@ -1606,7 +1610,10 @@ def _dispatch_list(args, scope: str | None) -> None:
         from kento import VirtualMachine as _Cls
     else:
         from kento import Instance as _Cls
-    insts = _Cls.list()
+    # S4 (Result sweep): list() returns Result; .unwrap() until S7. The normal
+    # outcome is Ok(list); a future enumeration Error would .unwrap()-raise into
+    # _handle (identical output).
+    insts = _Cls.list().unwrap()
 
     # JC6 — preserve today's `list` wire byte-for-byte. The legacy list.py SKIPS
     # an entry whose status probe is INDETERMINATE (an unreadable PVE config or a
@@ -1675,7 +1682,8 @@ def _dispatch_diagnose(args) -> None:
         # while run_diagnostics' enumerate drops only on OSError reading the
         # mode; in the normal store the two counts agree.
         from kento import Instance
-        instances_scanned = len(Instance.list())
+        # S4 (Result sweep): list() returns Result; .unwrap() until S7.
+        instances_scanned = len(Instance.list().unwrap())
     else:
         # A named scan visits exactly one resolved instance.
         instances_scanned = 1

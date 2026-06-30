@@ -420,11 +420,13 @@ class TestListSizeFlag:
                         expect_json):
         """Run `main(argv)` with the typed list + projection stubbed; return
         (class .list() was called on, show_size, used_json)."""
+        from kento import Ok
         seen = {}
 
         def fake_list(cls):
             seen["cls"] = cls
-            return []
+            # S4 (Result sweep): list() returns Result; the CLI .unwrap()s it.
+            return Ok(value=[])
 
         def fake_human(insts, *, show_size=False):
             seen["show_size"] = show_size
