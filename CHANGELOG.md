@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.3.dev0] - 2026-06-30
+
+> **Synced dev line.** kento (CLI) and kento-core now share the version
+> `1.6.3.dev0` and will stay on a synced `.devN` pre-release line until a
+> coordinated stable cut. It sits **above the stable `1.6.2`**: `pip install kento`
+> still resolves to `1.6.2` (the latest published stable), `pip install --pre kento`
+> picks up this dev line. The earlier `1.6.0`/`1.6.1`/`1.6.2` remain valid
+> published releases (real bug-fix/feature cuts of the pre-rewrite CLI). This dev
+> release folds in the previously-untagged `1.6.3` work (the VM `--cores` clamp)
+> plus the typed kento-core re-point and the storage-depth pass — the items below.
+
 ### Changed
 
 - **BREAKING (`--json`): `upper_size` is now an int (bytes, allocated), was a
@@ -130,7 +141,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   isolation).`, exit 1), restoring the pre-re-point behavior. LXC/PVE-LXC
   `--unprivileged` is unaffected.
 
-## [1.6.3] - 2026-06-28
+## [1.6.3] — unreleased (local tag deleted; content folded into the 1.6.3.dev0 line above), 2026-06-28
 
 > Sibling-synced with **kento-core 1.6.0.dev4** (re-pinned dependency). The core
 > dev release also lands the additive typed public-API surface (Phases 1–2),
