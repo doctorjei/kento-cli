@@ -31,12 +31,130 @@ def _exit_code(exc: KentoError) -> int:
 def _handle(fn):
     """Run fn(); on KentoError print 'Error: <msg>' to stderr and exit with the
     mapped code. The CLI is the ONLY place exceptions become exit codes. Any
-    return value of fn is passed through untouched on success."""
+    return value of fn is passed through untouched on success.
+
+    Post-Result-sweep (S7) this fires ONLY for the still-RAISING verbs — the
+    property setters (`_dispatch_set`), `require_root()`, `transient()` — which
+    by design raise a `KentoError` rather than return a `Result`. The `Result`-
+    returning verbs are consumed by `_emit` (below), not by this wrapper. A
+    non-`KentoError` (a broken invariant, an unexpected bug) is NOT caught here
+    and surfaces as a genuine traceback/panic, exactly as before."""
     try:
         return fn()
     except KentoError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(_exit_code(exc))
+
+
+def _emit(result):
+    """Consume a ``kento.Result`` at the CLI edge — the Result -> CLI bridge (S7).
+
+    The single sanctioned place a returned ``Result`` becomes user-facing output
+    + an exit code (the doctrine's "the CLI is where outcomes are rendered"):
+
+    * ``Error``  -> print ``"Error: <message>"`` to stderr for EACH ERROR
+      condition, then ``sys.exit(code)`` (does NOT return). ``code`` is ``2`` when
+      any condition is a ``SUBPROCESS_FAILED`` whose ``context["returncode"]`` is
+      ``None`` (an external tool that could not be launched — mirrors the legacy
+      ``_exit_code``/``_handle`` contract), else ``1``.
+    * ``Warning`` -> print ``"Warning: <message>"`` to stderr for EACH WARNING
+      condition (the new user-visible channel; stdout stays clean for piping/
+      ``--json``), then RETURN ``result.value`` (a Warning succeeded — it carries
+      a value; exit stays 0).
+    * ``Ok`` -> RETURN ``result.value`` (no output; exit stays 0).
+
+    This preserves today's exit codes exactly: Ok/Warning -> 0, Error -> 1 (or 2
+    for a missing tool) — and the ``"Error: <msg>"`` text is byte-identical to the
+    pre-sweep path because the condition's ``message`` is the original exception's
+    ``str(exc)`` (preserved verbatim by ``_error_from``).
+    """
+    from kento import Error, Severity
+
+    if isinstance(result, Error):
+        for cond in result.conditions:
+            if cond.severity is Severity.ERROR:
+                print(f"Error: {cond.message}", file=sys.stderr)
+        sys.exit(_emit_error_code(result))
+    # Ok or Warning — both carry a value. Surface any WARNING caveats to stderr,
+    # then hand the value back to the caller.
+    for cond in result.conditions:
+        if cond.severity is Severity.WARNING:
+            print(f"Warning: {cond.message}", file=sys.stderr)
+    return result.value
+
+
+def _emit_error_code(result) -> int:
+    """The exit code for an ``Error`` result (1, or 2 for a missing tool).
+
+    Mirrors ``_exit_code``: a ``SUBPROCESS_FAILED`` condition whose
+    ``context["returncode"]`` is EXPLICITLY ``None`` means the external tool could
+    not be launched at all (``run_or_die`` sets ``returncode=None``), which the
+    monolith mapped to exit 2; every other failure is exit 1. Checks every
+    condition so the tool-missing signal is honoured wherever it sits in the stack.
+
+    The key must be PRESENT and ``None`` — an ABSENT ``returncode`` is *not* the
+    tool-missing signal (it carries no launch information), so it maps to 1. This
+    matches ``_error_from``, which ALWAYS sets ``context["returncode"]`` (to
+    ``None`` or an int) for a real ``SubprocessError`` — so the explicit-``None``
+    test is exactly the run_or_die tool-missing case and nothing else."""
+    from kento import ConditionKind
+
+    for cond in result.conditions:
+        if (
+            cond.kind is ConditionKind.SUBPROCESS_FAILED
+            and "returncode" in cond.context
+            and cond.context["returncode"] is None
+        ):
+            return 2
+    return 1
+
+
+def _result_warnings_wire(result) -> list[dict]:
+    """Project a ``Result``'s WARNING conditions to the ``--json`` ``warnings`` array.
+
+    Each WARNING-severity condition becomes ``{"kind": <str>, "message": <str>,
+    "context": <dict>}`` — the structured form seadog branches on (``kind`` is a
+    ``(str, Enum)`` member, so it serialises to its snake_case string; ``context``
+    is a read-only ``MappingProxyType``, copied to a plain dict so ``json.dumps``
+    accepts it). ERROR conditions never reach here (an ``Error`` exits via
+    ``_emit`` before any ``--json`` is printed), and INFO/NOTE notes are sub-
+    actionable and excluded. Returns ``[]`` when there are no warnings; the
+    caller OMITS the key entirely in that case to keep the clean-command wire
+    byte-identical (see the dispatcher call sites)."""
+    from kento import Severity
+
+    return [
+        {
+            "kind": cond.kind.value,
+            "message": cond.message,
+            "context": dict(cond.context),
+        }
+        for cond in result.conditions
+        if cond.severity is Severity.WARNING
+    ]
+
+
+def _emit_in_loop(result) -> bool:
+    """Render a ``Result`` inside a multi-name accumulator loop (``_dispatch_multi``).
+
+    The NON-exiting sibling of ``_emit``: where ``_emit`` ``sys.exit``s on the
+    first ``Error`` (right for a single-target verb), a multi-name loop must keep
+    going — render this name's failure and let the caller count it. So this prints
+    ``"Error: <message>"`` (ERROR conditions) / ``"Warning: <message>"`` (WARNING
+    conditions) to stderr exactly as ``_emit`` does, but RETURNS ``True`` on an
+    ``Error`` (the caller does ``errors += 1; continue``) and ``False`` otherwise.
+    No exit happens here — the loop owns the single exit-1-at-the-end."""
+    from kento import Error, Severity
+
+    if isinstance(result, Error):
+        for cond in result.conditions:
+            if cond.severity is Severity.ERROR:
+                print(f"Error: {cond.message}", file=sys.stderr)
+        return True
+    for cond in result.conditions:
+        if cond.severity is Severity.WARNING:
+            print(f"Warning: {cond.message}", file=sys.stderr)
+    return False
 
 
 class _MaxLevelFilter(logging.Filter):
@@ -682,10 +800,10 @@ def _dispatch(args, scope: str | None, subcmd: str) -> None:
 
         from kento_cli._projection import images_to_human
 
-        # S2 (Result sweep): ImageRecord.list() returns a Result; .unwrap() until
-        # S7 flips _handle to consume Result (Error -> ResultError, a KentoError,
-        # caught by the existing _handle -> identical "Error: ..." + exit code).
-        records = kento.ImageRecord.list().unwrap()
+        # S7: ImageRecord.list() returns a Result; _emit() consumes it (an
+        # enumeration-query Error -> "Error: <msg>" + exit; the normal outcome is
+        # Ok(list)). `images` has no --json (D2), so no warnings array here.
+        records = _emit(kento.ImageRecord.list())
         if args.in_use:
             records = [r for r in records if r.in_use]
         print(images_to_human(records))
@@ -711,11 +829,11 @@ def _dispatch(args, scope: str | None, subcmd: str) -> None:
         # (and the abstract `LayeredImage` layering node) are genuine ABCs; the
         # as-built classmethods (pull/list/prune) live on the concrete `OciImage`
         # (the only 1.0 OCI representation — disclosed placement). Use it directly.
-        # S2 (Result sweep): OciImage.prune() returns a Result; .unwrap() until S7
-        # flips _handle to consume Result (an enumeration-query failure becomes an
-        # Error -> ResultError, a KentoError, caught by _handle -> identical
-        # output; per-image rmi refusals still ride in the report's `failed`).
-        report = kento.OciImage.prune(scope=PruneScope.DANGLING).unwrap()
+        # S7: OciImage.prune() returns a Result; _emit() consumes it (an
+        # enumeration-query failure -> Error -> "Error: <msg>" + exit; per-image
+        # rmi refusals still ride in the Ok report's `failed`). `prune` is human-
+        # only (no --json), so any warnings surface to stderr via _emit.
+        report = _emit(kento.OciImage.prune(scope=PruneScope.DANGLING))
         print(_format_image_prune(report))
         failed = bool(report.failed)
         if args.orphans:
@@ -723,10 +841,10 @@ def _dispatch(args, scope: str | None, subcmd: str) -> None:
             # reap=args.yes -> dry-run unless --yes (the ReclaimReport's dry_run
             # mirrors that). Heavier blast radius (discards instance state), so
             # it stays a separately sectioned, opt-in pass.
-            # S6 (Result sweep): prune_orphans() returns a Result; .unwrap()
-            # until S7 flips _handle to consume Result. Per-orphan reap failures
-            # still ride in the report's `failed` (a dry-run/normal pass is Ok).
-            orphans = kento.Instance.prune_orphans(reap=args.yes).unwrap()
+            # S7: prune_orphans() returns a Result; _emit() consumes it. Per-
+            # orphan reap failures still ride in the report's `failed` (a dry-run/
+            # normal pass is Ok).
+            orphans = _emit(kento.Instance.prune_orphans(reap=args.yes))
             print()
             print(_format_orphan_prune(orphans))
             failed = failed or bool(orphans.failed)
@@ -746,9 +864,9 @@ def _dispatch(args, scope: str | None, subcmd: str) -> None:
         # success line from the handle's public properties — name and the PVE
         # vmid (platform_profile.mid; always present on an adopted PVE instance,
         # since adopt is pve-lxc/pve-vm only and fails closed otherwise).
-        # S6 (Result sweep): adopt() returns a Result; .unwrap() until S7 flips
-        # _handle to consume Result (an Error -> ResultError, caught by _handle).
-        inst = kento.Instance.adopt(args.name).unwrap()
+        # S7: adopt() returns a Result; _emit() consumes it (an Error ->
+        # "Error: <msg>" + exit; success returns the typed handle).
+        inst = _emit(kento.Instance.adopt(args.name))
         print(f"adopted '{inst.name}' (vmid {inst.platform_profile.mid}); "
               f"run 'kento start {inst.name}'")
 
@@ -973,20 +1091,20 @@ def _dispatch_create(args, scope: str | None) -> None:
                 "--unprivileged applies to LXC modes only (VMs have their "
                 "own isolation)."
             )
-        # Block S5: kind.create now returns a Result; .unwrap() preserves the
-        # pre-sweep raising behavior — a failed create raises ResultError (a
-        # KentoError), caught by the existing _handle wrapper (the S7 CLI block
-        # flips _handle to CONSUME the Result; until then this is byte-identical).
-        kind.create(args.name, args.image,
-                    qemu_args=getattr(args, "qemu_args", None) or (),
-                    kernel=getattr(args, "kernel", None),
-                    initramfs=getattr(args, "initramfs", None),
-                    **common).unwrap()
+        # S7: kind.create returns a Result; _emit() consumes it (a failed create
+        # -> "Error: <msg>" + exit; success returns the handle, which create
+        # discards — the success line is logged by the library). `create` has no
+        # --json, so any caveat warnings surface to stderr via _emit.
+        _emit(kind.create(args.name, args.image,
+                          qemu_args=getattr(args, "qemu_args", None) or (),
+                          kernel=getattr(args, "kernel", None),
+                          initramfs=getattr(args, "initramfs", None),
+                          **common))
     else:
-        kind.create(args.name, args.image,
-                    unprivileged=args.unprivileged,
-                    lxc_args=getattr(args, "lxc_args", None) or (),
-                    **common).unwrap()
+        _emit(kind.create(args.name, args.image,
+                          unprivileged=args.unprivileged,
+                          lxc_args=getattr(args, "lxc_args", None) or (),
+                          **common))
 
 
 def _build_create_network(net_type, bridge_name, ip, gateway, dns, mac):
@@ -1141,18 +1259,34 @@ def _dispatch_multi(args, scope: str | None, subcmd: str) -> None:
     for container_name in args.name:
         try:
             validate_name(container_name)
-            inst = _resolve_instance(container_name, scope)
+            # ``get`` + the lifecycle verbs now return ``Result``; the *resolve*
+            # is consumed here (NOT via ``_emit``, which would ``sys.exit`` on the
+            # FIRST bad name and abort the rest — this loop's contract is per-name
+            # isolation: render each failure and continue, exit 1 once at the end).
+            # ``_emit_in_loop`` renders an Error's conditions to stderr + returns
+            # whether it failed (and surfaces any Warning caveats), feeding the
+            # legacy ``errors`` accumulator instead of exiting.
+            res = _resolve_instance_result(container_name, scope)
+            if _emit_in_loop(res):
+                errors += 1
+                continue
+            inst = res.value
 
             if subcmd == "start":
-                inst.start().unwrap()
+                op = inst.start()
             elif subcmd in ("shutdown", "stop"):
                 force, timeout = _stop_args(args)
-                inst.stop(timeout=timeout, force=force).unwrap()
+                op = inst.stop(timeout=timeout, force=force)
             elif subcmd in ("destroy", "rm"):
-                inst.destroy(force=args.force).unwrap()
+                op = inst.destroy(force=args.force)
             elif subcmd == "scrub":
-                inst.scrub()
+                inst.scrub()  # scrub() still returns None (not converted); raises
+                continue
+            if _emit_in_loop(op):
+                errors += 1
         except KentoError as exc:
+            # A still-RAISING path (validate_name; scrub; any non-converted raise)
+            # — preserved exactly: render + count, do not abort the loop.
             print(f"Error: {exc}", file=sys.stderr)
             errors += 1
     if errors:
@@ -1205,37 +1339,53 @@ def _dispatch_info(args, scope: str | None) -> None:
     # the *other* kind now raises the typed kind-mismatch message rather than the
     # legacy "no <ns> named ..." string; no test pinned that text and the
     # exit code is unchanged.)
-    inst = _resolve_instance(args.name, scope)
+    # Keep the Result so its WARNING conditions can ride the --json `warnings`
+    # array (seadog reads it structurally); _emit also prints them to stderr.
+    res = _resolve_instance_result(args.name, scope)
+    inst = _emit(res)
+    warnings = _result_warnings_wire(res)
 
     # Project the typed snapshot back to TODAY's exact wire via the Block-17
     # projection (the library no longer builds the strings — §11.8 D1).
     from kento_cli import _projection
     if args.as_json:
-        print(_projection.instance_to_json(inst, verbose=args.verbose))
+        print(_projection.instance_to_json(
+            inst, verbose=args.verbose, warnings=warnings))
     else:
         print(_projection.instance_to_human(inst, verbose=args.verbose))
 
 
-def _resolve_instance(name: str, scope: str | None):
-    """Resolve ``name`` to its typed Instance handle, narrowed by ``scope``.
+def _resolve_instance_result(name: str, scope: str | None):
+    """Resolve ``name`` to a ``Result[Instance]`` handle, narrowed by ``scope``.
 
     ``scope`` maps to the polymorphic ``get`` entry point (§10.1): ``None`` ->
     the base ``Instance`` (both namespaces), ``"lxc"`` -> ``SystemContainer``,
-    ``"vm"`` -> ``VirtualMachine``. Raises ``InstanceNotFoundError`` on a miss or
-    a kind mismatch.
-    """
-    # S4 (Result sweep): Instance.get/SystemContainer.get/VirtualMachine.get now
-    # return a Result; .unwrap() until S7 flips _handle to consume Result. A miss
-    # is Error(INSTANCE_NOT_FOUND) whose .unwrap() raises ResultError (a
-    # KentoError) with the same message -> caught by _handle -> identical output.
+    ``"vm"`` -> ``VirtualMachine``. Returns the RAW ``Result`` (S4 ``get``
+    returns ``Result``): an ``Ok(handle)`` on success, an
+    ``Error(INSTANCE_NOT_FOUND)`` on a miss or a kind mismatch. Callers that want
+    exit-on-error wrap it in ``_emit`` (see ``_resolve_instance``); the multi-name
+    accumulator (``_dispatch_multi``) consumes it without exiting."""
     if scope == "lxc":
         from kento import SystemContainer
-        return SystemContainer.get(name).unwrap()
+        return SystemContainer.get(name)
     if scope == "vm":
         from kento import VirtualMachine
-        return VirtualMachine.get(name).unwrap()
+        return VirtualMachine.get(name)
     from kento import Instance
-    return Instance.get(name).unwrap()
+    return Instance.get(name)
+
+
+def _resolve_instance(name: str, scope: str | None):
+    """Resolve ``name`` to its typed Instance handle, exiting on a miss.
+
+    The exit-on-error convenience over ``_resolve_instance_result``: ``_emit``
+    renders an ``Error(INSTANCE_NOT_FOUND)`` as ``"Error: <msg>"`` + exit (the
+    same "missing-instance" contract as the pre-sweep ``.unwrap()`` -> ``_handle``
+    path) and returns the typed handle on success. Used by the single-target
+    dispatchers (``info``/``attach``/``set``/``suspend``/``resume``/``exec``/
+    ``logs``); the multi-name loop uses the ``_result`` variant directly so one
+    bad name doesn't abort the rest."""
+    return _emit(_resolve_instance_result(name, scope))
 
 
 def _dispatch_attach(args, scope: str | None) -> None:
@@ -1253,7 +1403,7 @@ def _dispatch_attach(args, scope: str | None) -> None:
     from kento import validate_name
     validate_name(args.name)
     inst = _resolve_instance(args.name, scope)
-    inst.attach().unwrap()
+    _emit(inst.attach())
 
 
 def _dispatch_set(args, scope: str | None) -> None:
@@ -1528,14 +1678,14 @@ def _dispatch_suspend(args, scope: str | None) -> None:
     """Re-pointed ``suspend`` onto ``VirtualMachine.suspend`` (M17, §11.4)."""
     from kento import validate_name
     validate_name(args.name)
-    _resolve_vm(args.name, scope).suspend().unwrap()
+    _emit(_resolve_vm(args.name, scope).suspend())
 
 
 def _dispatch_resume(args, scope: str | None) -> None:
     """Re-pointed ``resume`` onto ``VirtualMachine.resume`` (M18, §11.4)."""
     from kento import validate_name
     validate_name(args.name)
-    _resolve_vm(args.name, scope).resume().unwrap()
+    _emit(_resolve_vm(args.name, scope).resume())
 
 
 def _dispatch_exec(args, scope: str | None) -> None:
@@ -1557,7 +1707,9 @@ def _dispatch_exec(args, scope: str | None) -> None:
     if command and command[0] == "--":
         command = command[1:]
     inst = _resolve_lxc(args.name, scope, what="exec")
-    sys.exit(inst.exec(command).unwrap())
+    # exec -> Result[int]; _emit returns the wrapped exit code (non-zero is a
+    # RESULT, not an error — passed straight to sys.exit, preserving M13).
+    sys.exit(_emit(inst.exec(command)))
 
 
 def _resolve_lxc(name: str, scope: str | None, *, what: str):
@@ -1603,7 +1755,8 @@ def _dispatch_logs(args, scope: str | None) -> None:
     if extra and extra[0] == "--":
         extra = extra[1:]
     inst = _resolve_lxc(args.name, scope, what="logs")
-    for line in inst.logs(args=extra).unwrap():
+    # logs -> Result[Iterator[str]]; _emit returns the iterator on Ok/Warning.
+    for line in _emit(inst.logs(args=extra)):
         # Each yielded line is already newline-free (the streamer splits on
         # newlines); print restores the newline. Flush per line so a live
         # `-f` tail appears immediately rather than buffered.
@@ -1620,10 +1773,13 @@ def _dispatch_list(args, scope: str | None) -> None:
         from kento import VirtualMachine as _Cls
     else:
         from kento import Instance as _Cls
-    # S4 (Result sweep): list() returns Result; .unwrap() until S7. The normal
-    # outcome is Ok(list); a future enumeration Error would .unwrap()-raise into
-    # _handle (identical output).
-    insts = _Cls.list().unwrap()
+    # S7: list() returns Result; _emit() consumes it (Ok(list) normally; a future
+    # enumeration Error -> "Error: <msg>" + exit; any WARNING caveat -> stderr).
+    # NOTE: `list --json` is a top-level JSON ARRAY (the legacy wire seadog
+    # parses) — an array cannot carry a top-level `warnings` KEY without changing
+    # its shape, so unlike info/diagnose (objects) it gets NO warnings array;
+    # warnings still reach humans via _emit's stderr. Disclosed (see chat).
+    insts = _emit(_Cls.list())
 
     # JC6 — preserve today's `list` wire byte-for-byte. The legacy list.py SKIPS
     # an entry whose status probe is INDETERMINATE (an unreadable PVE config or a
@@ -1682,11 +1838,14 @@ def _dispatch_diagnose(args) -> None:
     name = getattr(args, "name", None) or None
 
     import kento
-    # S6 (Result sweep): diagnose() returns a Result; .unwrap() until S7 flips
-    # _handle to consume Result. A scoped miss -> Error(INSTANCE_NOT_FOUND) ->
-    # ResultError (a KentoError) on unwrap, caught by _handle -> identical wire.
-    # The scan's degraded findings ride INSIDE the Ok(Diagnosis), not as errors.
-    diag = kento.diagnose(name=name).unwrap()  # ResultError on a scoped miss
+    # S7: diagnose() returns a Result; _emit() consumes it. A scoped miss ->
+    # Error(INSTANCE_NOT_FOUND) -> "Error: <msg>" + exit. The scan's degraded
+    # FINDINGS ride INSIDE the Ok(Diagnosis) (rendered by the projection), not as
+    # Result conditions. Keep the Result so any WARNING conditions ride the --json
+    # `warnings` array (distinct from the scan findings, which the report carries).
+    diag_res = kento.diagnose(name=name)
+    diag = _emit(diag_res)  # exits on a scoped miss
+    warnings = _result_warnings_wire(diag_res)
 
     if name is None:
         # The host-wide enumeration count (matches run_diagnostics(None)'s
@@ -1696,15 +1855,16 @@ def _dispatch_diagnose(args) -> None:
         # while run_diagnostics' enumerate drops only on OSError reading the
         # mode; in the normal store the two counts agree.
         from kento import Instance
-        # S4 (Result sweep): list() returns Result; .unwrap() until S7.
-        instances_scanned = len(Instance.list().unwrap())
+        # S7: list() returns Result; _emit() consumes it (count is over the Ok
+        # value; an enumeration Error -> "Error: <msg>" + exit).
+        instances_scanned = len(_emit(Instance.list()))
     else:
         # A named scan visits exactly one resolved instance.
         instances_scanned = 1
 
     if args.as_json:
         print(_projection.diagnosis_to_json(
-            diag, instances_scanned=instances_scanned))
+            diag, instances_scanned=instances_scanned, warnings=warnings))
     else:
         print(_projection.diagnosis_to_human(
             diag, instances_scanned=instances_scanned))
@@ -1801,11 +1961,11 @@ def _dispatch_pull(args) -> None:
     kento.require_root()
     # Spec §11.5 phrases this `Image.pull`; the as-built classmethod lives on the
     # concrete `OciImage` (Image and LayeredImage are genuine ABCs).
-    # S2 (Result sweep): OciImage.pull() returns a Result; .unwrap() until S7
-    # flips _handle to consume Result (Error -> ResultError, a KentoError, caught
-    # by the existing _handle -> identical "Error: ..." + exit code, including the
-    # podman-absent exit 2 from SubprocessError.returncode is None).
-    image = kento.OciImage.pull(args.image).unwrap()
+    # S7: OciImage.pull() returns a Result; _emit() consumes it (Error ->
+    # "Error: <msg>" + exit, including the podman-absent exit 2 from a
+    # SUBPROCESS_FAILED condition whose context["returncode"] is None). `pull`
+    # has no --json, so any caveat warnings surface to stderr via _emit.
+    image = _emit(kento.OciImage.pull(args.image))
     print(f"Pulled {image.source.render()}")
 
 
