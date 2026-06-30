@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
-from kento import ReclaimReport
+from kento import Ok, ReclaimReport
 
 from kento_cli import main
 
@@ -23,7 +23,8 @@ def _clean_image_report():
 
 
 def _orphan_report(*, dry_run):
-    return ReclaimReport(dry_run=dry_run, reclaimed=("ghost",))
+    # S6 (Result sweep): prune_orphans returns a Result; the CLI .unwrap()s it.
+    return Ok(value=ReclaimReport(dry_run=dry_run, reclaimed=("ghost",)))
 
 
 class TestPruneOrphans:
@@ -78,9 +79,11 @@ class TestPruneOrphans:
 
     def test_orphans_failure_exits_nonzero(self, capsys):
         """A failed reap (ReclaimReport.failed) makes the CLI exit 1."""
-        report = ReclaimReport(
+        # Per-orphan failures ride in report.failed; the Result is still Ok
+        # (S6) — the CLI exits 1 on report.failed, not on a Result Error.
+        report = Ok(value=ReclaimReport(
             dry_run=False, reclaimed=(),
-            failed=(("ghost", "destroy refused"),))
+            failed=(("ghost", "destroy refused"),)))
         with patch("kento.require_root"), \
              patch("kento.OciImage.prune",
                    return_value=__import__("kento").Ok(

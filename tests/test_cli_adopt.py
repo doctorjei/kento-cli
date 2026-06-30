@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from kento.errors import StateError
+from kento import Condition, ConditionKind, Error, Ok, Severity
 
 from kento_cli import main
 
@@ -27,8 +27,10 @@ class TestAdopt:
 
     def test_adopt_calls_library_with_name_and_prints_success(self, capsys):
         handle = _fake_handle()
+        # S6 (Result sweep): Instance.adopt returns a Result; the CLI .unwrap()s.
         with patch("kento.require_root"), \
-             patch("kento.Instance.adopt", return_value=handle) as adopt:
+             patch("kento.Instance.adopt",
+                   return_value=Ok(value=handle)) as adopt:
             main(["adopt", "ghost"])
         adopt.assert_called_once_with("ghost")
         out = capsys.readouterr().out
@@ -45,10 +47,16 @@ class TestAdopt:
         adopt.assert_not_called()
 
     def test_adopt_library_error_surfaces_via_handle(self, capsys):
-        """A KentoError (e.g. not an orphan) becomes 'Error: ...' + exit 1."""
+        """S6: a failure is Error(INVALID_STATE); the CLI .unwrap()s it ->
+        ResultError (a KentoError) -> _handle -> 'Error: ...' + exit 1 (message
+        preserved, byte-identical wire)."""
+        err_result = Error(conditions=(Condition(
+            severity=Severity.ERROR,
+            kind=ConditionKind.INVALID_STATE,
+            message="instance 'ghost' is not an orphan",
+            context={}),))
         with patch("kento.require_root"), \
-             patch("kento.Instance.adopt",
-                   side_effect=StateError("instance 'ghost' is not an orphan")):
+             patch("kento.Instance.adopt", return_value=err_result):
             with pytest.raises(SystemExit) as exc:
                 main(["adopt", "ghost"])
         assert exc.value.code == 1

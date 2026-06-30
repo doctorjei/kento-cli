@@ -135,7 +135,9 @@ class TestPruneBothSectionsAndExit:
         """Image failure + clean orphans -> both print, exit 1."""
         img = ReclaimReport(dry_run=False, reclaimed=(),
                             failed=(("x", "held"),))
-        orph = ReclaimReport(dry_run=True, reclaimed=("g",))
+        # S6 (Result sweep): prune_orphans returns a Result; the CLI .unwrap()s.
+        orph = __import__("kento").Ok(
+            value=ReclaimReport(dry_run=True, reclaimed=("g",)))
         with patch("kento.require_root"), \
              patch("kento.OciImage.prune",
                    return_value=__import__("kento").Ok(value=img)), \
@@ -149,7 +151,8 @@ class TestPruneBothSectionsAndExit:
 
     def test_clean_both_exits_0(self, capsys):
         img = ReclaimReport(dry_run=False, reclaimed=("a",))
-        orph = ReclaimReport(dry_run=True)
+        # S6: prune_orphans returns a Result; the CLI .unwrap()s.
+        orph = __import__("kento").Ok(value=ReclaimReport(dry_run=True))
         with patch("kento.require_root"), \
              patch("kento.OciImage.prune",
                    return_value=__import__("kento").Ok(value=img)), \
