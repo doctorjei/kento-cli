@@ -351,11 +351,17 @@ def test_diagnose_json_warning_rides_array(capsys, monkeypatch):
         {"kind": "fragment_dropped", "message": "scan caveat", "context": {}}]
 
 
-def test_multi_loop_isolates_one_bad_name(capsys, monkeypatch):
-    """start over two names where ONE resolves to an Error: the good one still
-    runs, the bad one is rendered, and the process exits 1 once at the end (NOT
-    aborting on the first bad name). Mutation: routing resolve through _emit
-    (which sys.exits on the first Error) reddens — the good name never runs."""
+def test_multi_loop_isolates_bad_name_first(capsys, monkeypatch):
+    """start over two names where the FIRST resolves to an Error: the bad one is
+    rendered AND the LATER good one STILL runs, exit 1 once at the end (per-name
+    isolation, NOT abort-on-first-error).
+
+    BAD-NAME-FIRST is load-bearing for the mutation guard (gate C): it makes
+    _emit_in_loop's non-exit reddenable. Mutation: replacing _emit_in_loop's
+    `return True` with `sys.exit(1)` (or routing resolve through _emit) aborts on
+    'ghost' BEFORE 'real' runs -> `started == []` reddens. (A good-FIRST ordering
+    would leave the guard hollow — the good name already ran, so an early exit
+    still shows started==['real'] + code 1.)"""
     bad = _err("no instance named 'ghost'",
                kind=ConditionKind.INSTANCE_NOT_FOUND)
     started = []
@@ -372,9 +378,9 @@ def test_multi_loop_isolates_one_bad_name(capsys, monkeypatch):
     monkeypatch.setattr("kento.validate_name", lambda *a, **k: None)
 
     with pytest.raises(SystemExit) as ei:
-        main(["start", "real", "ghost"])
-    assert ei.value.code == 1            # one failure -> exit 1
-    assert started == ["real"]           # the good name STILL ran
+        main(["start", "ghost", "real"])   # BAD FIRST — the guard bites here
+    assert ei.value.code == 1              # one failure -> exit 1
+    assert started == ["real"]             # the LATER good name STILL ran
     assert "Error: no instance named 'ghost'" in capsys.readouterr().err
 
 
