@@ -16,6 +16,95 @@ from test_cli import _run_create
 # ---------- Argparse / CLI-level tests ----------
 
 
+class TestKernelInitrdCli:
+    """--kernel/--initrd: VM scope only (boot-source override, §8 Phase A)."""
+
+    def test_kernel_in_vm_create_help(self, capsys):
+        with pytest.raises(SystemExit) as exc:
+            main(["vm", "create", "--help"])
+        assert exc.value.code == 0
+        out = capsys.readouterr().out
+        assert "--kernel" in out
+        assert "--initrd" in out
+
+    def test_kernel_hidden_from_lxc_create_help(self, capsys):
+        # Mirrors --mac/--qemu-arg: SUPPRESS-ed on the LXC create parser.
+        with pytest.raises(SystemExit) as exc:
+            main(["lxc", "create", "--help"])
+        assert exc.value.code == 0
+        out = capsys.readouterr().out
+        assert "--kernel" not in out
+        assert "--initrd" not in out
+
+    def test_kernel_initrd_pass_through_on_vm(self):
+        call = _run_create([
+            "vm", "create",
+            "--kernel", "/boot/vmlinuz-test",
+            "--initrd", "/boot/initramfs-test.img",
+            "debian:12"])
+        assert call.kwargs["kernel"] == "/boot/vmlinuz-test"
+        assert call.kwargs["initramfs"] == "/boot/initramfs-test.img"
+
+    def test_kernel_only_pass_through_on_vm(self):
+        # Each side is independent; --initrd absent -> initramfs=None.
+        call = _run_create([
+            "vm", "create", "--kernel", "/boot/vmlinuz-test", "debian:12"])
+        assert call.kwargs["kernel"] == "/boot/vmlinuz-test"
+        assert call.kwargs["initramfs"] is None
+
+    def test_initrd_only_pass_through_on_vm(self):
+        call = _run_create([
+            "vm", "create", "--initrd", "/boot/initramfs-test.img", "debian:12"])
+        assert call.kwargs["kernel"] is None
+        assert call.kwargs["initramfs"] == "/boot/initramfs-test.img"
+
+    def test_default_none_when_absent_on_vm(self):
+        # No override flags -> both None (in-image fallback).
+        call = _run_create(["vm", "create", "debian:12"])
+        assert call.kwargs["kernel"] is None
+        assert call.kwargs["initramfs"] is None
+
+    def test_kernel_rejected_on_lxc_create(self, capsys):
+        # Guard must fire BEFORE dispatch: SystemContainer.create (no kernel
+        # param) is never reached. Patch BOTH creates and assert neither fired.
+        with patch("kento.SystemContainer.create") as msc, \
+             patch("kento.VirtualMachine.create") as mvm, \
+             pytest.raises(SystemExit) as exc:
+            main(["lxc", "create", "--kernel", "/boot/vmlinuz-test", "debian:12"])
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "--kernel/--initrd are not supported for LXC" in err
+        assert not msc.called  # core create NEVER reached (no TypeError path)
+        assert not mvm.called
+
+    def test_initrd_rejected_on_lxc_create(self, capsys):
+        with patch("kento.SystemContainer.create") as msc, \
+             patch("kento.VirtualMachine.create") as mvm, \
+             pytest.raises(SystemExit) as exc:
+            main(["lxc", "create",
+                  "--initrd", "/boot/initramfs-test.img", "debian:12"])
+        assert exc.value.code == 1
+        assert "--kernel/--initrd are not supported for LXC" in \
+            capsys.readouterr().err
+        assert not msc.called
+        assert not mvm.called
+
+    def test_kernel_rejected_on_lxc_run(self, capsys):
+        # `run` shares the create dispatch + parser; same LXC rejection.
+        with patch("kento.SystemContainer.create") as msc, \
+             patch("kento.VirtualMachine.create") as mvm, \
+             pytest.raises(SystemExit) as exc:
+            main(["lxc", "run", "--kernel", "/boot/vmlinuz-test", "debian:12"])
+        assert exc.value.code == 1
+        assert "--kernel/--initrd are not supported for LXC" in \
+            capsys.readouterr().err
+        assert not msc.called
+        assert not mvm.called
+
+
+# ---------- existing pass-through flags ----------
+
+
 class TestQemuArgCli:
     """--qemu-arg: exposed on VM scope only, rejected on LXC scope."""
 

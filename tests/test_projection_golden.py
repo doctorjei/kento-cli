@@ -170,6 +170,58 @@ def test_info_vm_human_byte_identical(vm_min):
     assert out == golden
 
 
+# --------------------------------------------------------------------------- #
+# kernel/initramfs boot-source override echo (§8 Phase A, Block A2). The override
+# is a CLI-only projection field (core info.py does not render it), so these are
+# direct projection assertions, NOT byte-vs-library golden comparisons. Present
+# only when the kento-kernel/kento-initramfs markers exist; each side independent.
+# --------------------------------------------------------------------------- #
+
+
+def test_info_kernel_override_present_json_and_human(tmp_path):
+    d = _build_lxc(tmp_path / "vm", "ovr", image="alpine:3.19", name="ovr",
+                   mode="vm",
+                   **{"kento-kernel": "/var/lib/kento/vm/ovr/kernel\n",
+                      "kento-initramfs": "/var/lib/kento/vm/ovr/initramfs.img\n"})
+    inst = _load(d, "vm")
+    with mock.patch("kento_cli._projection.is_running", return_value=False):
+        wire = proj.instance_to_wire_dict(inst, verbose=False)
+        human = proj.instance_to_human(inst, verbose=False)
+    assert wire["kernel"] == "/var/lib/kento/vm/ovr/kernel"
+    assert wire["initramfs"] == "/var/lib/kento/vm/ovr/initramfs.img"
+    assert "Kernel:     /var/lib/kento/vm/ovr/kernel" in human
+    assert "Initramfs:  /var/lib/kento/vm/ovr/initramfs.img" in human
+
+
+def test_info_kernel_only_override_each_side_independent(tmp_path):
+    # --kernel without --initrd: only the kernel key/line is present.
+    d = _build_lxc(tmp_path / "vm", "konly", image="alpine:3.19", name="konly",
+                   mode="vm",
+                   **{"kento-kernel": "/var/lib/kento/vm/konly/kernel\n"})
+    inst = _load(d, "vm")
+    with mock.patch("kento_cli._projection.is_running", return_value=False):
+        wire = proj.instance_to_wire_dict(inst, verbose=False)
+        human = proj.instance_to_human(inst, verbose=False)
+    assert wire["kernel"] == "/var/lib/kento/vm/konly/kernel"
+    assert "initramfs" not in wire
+    assert "Kernel:" in human
+    assert "Initramfs:" not in human
+
+
+def test_info_override_absent_omitted_json_and_human(tmp_path):
+    # No override markers -> neither key/line appears (present-only-when-set).
+    d = _build_lxc(tmp_path / "vm", "noovr", image="alpine:3.19", name="noovr",
+                   mode="vm")
+    inst = _load(d, "vm")
+    with mock.patch("kento_cli._projection.is_running", return_value=False):
+        wire = proj.instance_to_wire_dict(inst, verbose=False)
+        human = proj.instance_to_human(inst, verbose=False)
+    assert "kernel" not in wire
+    assert "initramfs" not in wire
+    assert "Kernel:" not in human
+    assert "Initramfs:" not in human
+
+
 def test_info_pve_lxc_mode_normalized(tmp_path):
     """A pve (pve-lxc) instance: mode normalizes to 'pve-lxc' in both wires."""
     d = _build_lxc(tmp_path / "lxc", "100", image="debian:bookworm",

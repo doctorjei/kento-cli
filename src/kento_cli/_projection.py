@@ -159,6 +159,19 @@ def instance_to_wire_dict(inst: "Instance", *, verbose: bool = False) -> dict:
     if mac:
         data["mac"] = mac
 
+    # kernel/initramfs boot-source override (§8 Phase A) — the in-instance path
+    # of a caller-supplied kernel/initramfs, copied in at create time. Present
+    # only when overridden (the marker exists); each side independent. Read at
+    # the OUTPUT edge via the marker, NOT inst.image() — the override echo is
+    # metadata display, not a storage-resolve seam (Instance.image() is the
+    # library-API path for programmatic consumers).
+    kernel = _read_meta(container_dir, "kento-kernel")
+    if kernel:
+        data["kernel"] = kernel
+    initramfs = _read_meta(container_dir, "kento-initramfs")
+    if initramfs:
+        data["initramfs"] = initramfs
+
     nesting = _read_meta(container_dir, "kento-nesting")
     if nesting is not None:
         data["nesting"] = (nesting == "1")
@@ -289,6 +302,10 @@ def _format_human(data: dict, verbose: bool, *,
         lines.append(f"Network:    {data['network']}")
     if "mac" in data:
         lines.append(f"MAC:        {data['mac']}")
+    if "kernel" in data:
+        lines.append(f"Kernel:     {data['kernel']}")
+    if "initramfs" in data:
+        lines.append(f"Initramfs:  {data['initramfs']}")
     if "nesting" in data:
         lines.append(f"Nesting:    {'allowed' if data['nesting'] else 'disabled'}")
     if "timezone" in data:

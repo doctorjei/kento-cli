@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`kento vm create --kernel PATH` / `--initrd PATH` — boot-source override
+  (URL-VM Phase A).** Boot a VM against a caller-supplied kernel and/or
+  initramfs instead of the ones inside the image, for booting a trusted rootfs
+  image under a pre-release or custom kernel. The file(s) are copied into the
+  instance state dir and reaped on `destroy`; each side is independent (the
+  unspecified side falls back to the in-image `/boot`). **VM modes only** —
+  `lxc create --kernel/--initrd` is rejected with a friendly error (containers
+  share the host kernel). `kento info` echoes the override when present (a
+  `Kernel:` / `Initramfs:` line in the human block; `kernel` / `initramfs` keys
+  in `--json`, omitted when not overridden). The caller owns kernel correctness
+  (a swapped kernel must boot the paired rootfs; a modular kernel needs its
+  matching `/lib/modules/<ver>` reachable in the rootfs — kento does not enforce
+  this). Phase A is local-file only (no fetch); a whole-source URL is Phase B.
+  Requires kento-core >= 1.6.3.dev0 (the `VirtualMachine.create(kernel=,
+  initramfs=)` boot-source override landed there as Block A1).
+
 ## [1.6.3.dev0] - 2026-06-30
 
 > **Synced dev line.** kento (CLI) and kento-core now share the version

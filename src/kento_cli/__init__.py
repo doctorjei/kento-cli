@@ -275,6 +275,18 @@ def _add_create_args(parser, *, scope: str | None = None) -> None:
                         help=(argparse.SUPPRESS if scope == "lxc" else
                               "Override the auto-generated MAC address (VM modes only, "
                               "format: XX:XX:XX:XX:XX:XX)"))
+    parser.add_argument("--kernel", default=None, dest="kernel", metavar="PATH",
+                        help=(argparse.SUPPRESS if scope == "lxc" else
+                              "Boot a caller-supplied kernel instead of the one in "
+                              "the image (VM modes only). The file is copied into the "
+                              "instance state dir; the unspecified side falls back to "
+                              "the in-image kernel."))
+    parser.add_argument("--initrd", default=None, dest="initramfs", metavar="PATH",
+                        help=(argparse.SUPPRESS if scope == "lxc" else
+                              "Boot a caller-supplied initramfs instead of the one in "
+                              "the image (VM modes only). The file is copied into the "
+                              "instance state dir; the unspecified side falls back to "
+                              "the in-image initramfs."))
     parser.add_argument("--config-mode", default="auto",
                         choices=["injection", "cloudinit", "auto"],
                         dest="config_mode",
@@ -805,6 +817,20 @@ def _dispatch_create(args, scope: str | None) -> None:
               "--lxc-arg.", file=sys.stderr)
         sys.exit(1)
 
+    # --kernel/--initrd override the in-image boot sources for VM modes only
+    # (containers share the host kernel; LXC/PVE-LXC never boot a kernel).
+    # Reject BEFORE the kind.create call so SystemContainer.create — which has
+    # no kernel/initramfs param — is never reached. PVE-LXC is reached via lxc
+    # scope + --pve auto-promotion; this lxc-scope guard covers it too. (Core
+    # also rejects via ModeError on the procedural path; this is the friendly
+    # CLI-edge UX layer, same as --mac/--qemu-arg.)
+    if scope == "lxc" and (getattr(args, "kernel", None) is not None
+                           or getattr(args, "initramfs", None) is not None):
+        print("Error: --kernel/--initrd are not supported for LXC/PVE-LXC; "
+              "they apply only to VM modes (containers share the host kernel). "
+              "Remove them or use 'kento vm create'.", file=sys.stderr)
+        sys.exit(1)
+
     # --lxc-arg targets plain-LXC's native config ONLY. On a PVE host (or
     # explicit --pve) the LXC config is the PVE .conf, which already carries
     # raw lxc.* lines via --pve-arg; VM scope has no native LXC config.
@@ -937,6 +963,8 @@ def _dispatch_create(args, scope: str | None) -> None:
             )
         kind.create(args.name, args.image,
                     qemu_args=getattr(args, "qemu_args", None) or (),
+                    kernel=getattr(args, "kernel", None),
+                    initramfs=getattr(args, "initramfs", None),
                     **common)
     else:
         kind.create(args.name, args.image,
