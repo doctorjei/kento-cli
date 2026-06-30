@@ -968,15 +968,20 @@ def _dispatch_create(args, scope: str | None) -> None:
                 "--unprivileged applies to LXC modes only (VMs have their "
                 "own isolation)."
             )
+        # Block S5: kind.create now returns a Result; .unwrap() preserves the
+        # pre-sweep raising behavior — a failed create raises ResultError (a
+        # KentoError), caught by the existing _handle wrapper (the S7 CLI block
+        # flips _handle to CONSUME the Result; until then this is byte-identical).
         kind.create(args.name, args.image,
                     qemu_args=getattr(args, "qemu_args", None) or (),
                     kernel=getattr(args, "kernel", None),
                     initramfs=getattr(args, "initramfs", None),
-                    **common)
+                    **common).unwrap()
     else:
         kind.create(args.name, args.image,
                     unprivileged=args.unprivileged,
-                    lxc_args=getattr(args, "lxc_args", None) or (), **common)
+                    lxc_args=getattr(args, "lxc_args", None) or (),
+                    **common).unwrap()
 
 
 def _build_create_network(net_type, bridge_name, ip, gateway, dns, mac):
