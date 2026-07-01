@@ -7,7 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0.dev0]
+
+> **Synced dev line (continued).** kento (CLI) and kento-core advance together to
+> `1.7.0.dev0`, staying on the shared `.devN` pre-release line above the stable
+> `1.6.2` until a coordinated stable cut: `pip install kento` still resolves to
+> `1.6.2`, `pip install --pre kento` picks up this dev line. Not yet published at
+> time of writing.
+
 ### Added
+
+- **URL-VM create — `kento vm create https://HOST/rootfs.txz` (whole-source URL,
+  Phase B).** For `vm` / `pve-vm`, the `<image>` positional may be an `https://`
+  URL to a `.txz` rootfs tarball instead of an OCI image reference. The rootfs is
+  fetched over HTTPS and extracted into an **ephemeral** working area for that VM
+  (no podman store involvement, nothing pulled into the image ledger); it is not
+  a managed image. Pair it with `--kernel URL` / `--initrd URL` (or local paths)
+  since a fetched rootfs carries no in-image `/boot` to fall back to. **VM modes
+  only** — a URL rootfs is rejected for `lxc` / `pve-lxc` with a friendly error
+  (containers assemble their rootfs from OCI layers, not a fetched tarball). The
+  per-fetch download size is capped (default 2 GiB, override with the
+  `KENTO_URL_MAX_BYTES` environment variable). Requires kento-core >= 1.7.0.dev0.
+
+  Example:
+
+  ```
+  sudo kento vm create https://HOST/rootfs.txz \
+      --kernel https://HOST/vmlinuz \
+      --initrd https://HOST/gemet-initramfs.img \
+      --name myvm
+  ```
 
 - **`kento vm create --kernel PATH` / `--initrd PATH` — boot-source override
   (URL-VM Phase A).** Boot a VM against a caller-supplied kernel and/or
@@ -24,6 +53,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   this). Phase A is local-file only (no fetch); a whole-source URL is Phase B.
   Requires kento-core >= 1.6.3.dev0 (the `VirtualMachine.create(kernel=,
   initramfs=)` boot-source override landed there as Block A1).
+
+### Changed
+
+- **Result-pivot rendering — warnings now have a dedicated user channel.**
+  Predictable outcomes flow through the typed `kento-core` `Result` type, and the
+  CLI renders them at the output edge:
+  - **Warnings** print as `Warning: <message>` to **stderr** and the command
+    still **succeeds (exit 0)** — stdout stays clean for piping / `--json`.
+  - **Errors** print as `Error: <message>` to **stderr** and exit **non-zero**:
+    `1` for an ordinary command failure, `2` when an external tool could not be
+    launched at all (unchanged from the prior exit-code contract).
+  - **The object-emitting `--json` commands gain a top-level `warnings[]`
+    array** (`info` / `inspect --json`, `diagnose --json`). Each entry is
+    `{"kind", "message", "context"}`. The key is **omitted entirely when there
+    are no warnings**, so clean-command output is byte-identical to before.
+    `list --json` is a top-level array and carries no such key — its warnings
+    still print to stderr.
+  See the new **Exit codes** section in the README for the full contract.
 
 ## [1.6.3.dev0] - 2026-06-30
 

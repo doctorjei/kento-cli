@@ -92,6 +92,21 @@ The noun (`lxc` or `vm`) selects the instance type. For `vm create` the
 `<image>` may instead be an `https://` URL to a `.txz` rootfs tarball; a
 URL rootfs is rejected for `lxc` / `pve-lxc`.
 
+A URL rootfs is **VM-only**: it is fetched over HTTPS and extracted into an
+ephemeral working area for that one VM — nothing is pulled into podman's store
+or the kento image ledger. A fetched rootfs has no in-image `/boot` to fall back
+to, so supply the kernel and initramfs explicitly (URLs or local paths):
+
+```
+sudo kento vm create https://HOST/rootfs.txz \
+    --kernel https://HOST/vmlinuz \
+    --initrd https://HOST/gemet-initramfs.img \
+    --name myvm
+```
+
+The download size is capped (default 2 GiB); see
+[`KENTO_URL_MAX_BYTES`](#environment-variables) to change it.
+
 Options:
 
 | Flag | Default | Description |
@@ -307,7 +322,9 @@ for `list`.
 `mode`, `image`, `status`, plus `vmid` / `mac` / `environment` /
 `ssh_host_key_fingerprints` / `upper_size` when present), so a tool can
 enumerate every instance in a single call instead of parsing the table and
-running `inspect` per instance. No instances → `[]`.
+running `inspect` per instance. No instances → `[]`. `list --json` is a top-level
+JSON **array**, so (unlike `inspect --json`, which is an object) it carries no
+`warnings[]` key — any warnings still print to stderr (see [Exit codes](#exit-codes)).
 
 ### Info / inspect
 
@@ -326,6 +343,11 @@ config, layer count, and more. `inspect` is an alias for `info`.
 
 For PVE-LXC instances, the `--json` `mode` reads `pve-lxc` (normalized to agree
 with `list --json`); the `type` field is the `LXC` / `VM` family.
+
+`info` / `inspect --json` is a JSON object, so if the command raised any warnings
+it also carries a top-level `warnings[]` array — each entry is
+`{"kind", "message", "context"}`. The key is omitted when there are no warnings
+(see [Exit codes](#exit-codes)). The same applies to `diagnose --json`.
 
 ### Diagnose
 
@@ -417,6 +439,36 @@ deliberately **per-instance only** (no "adopt all"); resurrecting a
 deliberately-killed instance is the costly wrong guess. It fails closed, refusing
 when the target is not an orphan, when its vmid is now occupied by a different
 instance, when the mode is non-PVE, or when required network metadata is missing.
+
+## Exit codes
+
+Every command follows the same contract:
+
+| Code | Meaning |
+|------|---------|
+| `0` | Success. **Warnings are exit 0** — they print as `Warning: <message>` to **stderr** while the command still succeeds and stdout stays clean for piping / `--json`. |
+| `1` | Command failure — a usage error, a not-found instance, a validation or operation error. Prints as `Error: <message>` to stderr. |
+| `2` | An external tool could not be launched at all (e.g. `podman` / `lxc-start` missing or unexecutable). Also prints as `Error: <message>` to stderr. |
+
+An unexpected internal fault (a broken invariant / bug) surfaces as a Python
+traceback rather than one of these codes. `diagnose` is the one command whose
+exit code reflects *findings* rather than failure: it exits `1` when the scan
+reports any `warn` / `error` finding, else `0`.
+
+The `--json` commands that emit an object (`inspect --json`, `diagnose --json`)
+add a top-level `warnings[]` array when the command raised warnings; each entry
+is `{"kind", "message", "context"}`, and the key is omitted when empty.
+`list --json` is a top-level array and carries no such key.
+
+## Environment variables
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `KENTO_URL_MAX_BYTES` | `2147483648` (2 GiB) | Per-fetch download size cap for a URL rootfs (`kento vm create https://…`). The fetch is aborted with an error once a body exceeds this many bytes, so a mistyped or hostile URL cannot fill the disk. Set to a larger integer for an oversized rootfs. |
+
+Kento honours a few additional runtime overrides (`KENTO_STATE_DIR` for the
+writable-layer base, `KENTO_APPARMOR_PROFILE` for the plain-LXC AppArmor
+profile); see the [Troubleshooting](docs/troubleshooting.md) guide.
 
 ## Runtime layout
 
