@@ -34,7 +34,9 @@ The CLI uses a noun-verb pattern: `kento lxc <cmd>` for LXC instances,
   Use `kento lxc create` on a PVE host.
 - **vm** — boots OCI images as QEMU VMs via virtiofs.
   Use `kento vm create`. Kernel and initramfs come from inside the OCI
-  image (`/boot/vmlinuz`, `/boot/initramfs.img`).
+  image (`/boot/vmlinuz`, `/boot/initramfs.img`) unless overridden with
+  `--kernel` / `--initrd`. The rootfs may also be an `https://` URL to a
+  `.txz` tarball instead of an OCI image (VM modes only).
 - **pve-vm** — QEMU VMs managed through PVE (hookscript + qm config).
   Auto-detected when using `kento vm create` on a PVE host.
 
@@ -86,7 +88,9 @@ sudo kento lxc create <image> [--name <name>]
 sudo kento vm create <image> [--name <name>]
 ```
 
-The noun (`lxc` or `vm`) selects the instance type.
+The noun (`lxc` or `vm`) selects the instance type. For `vm create` the
+`<image>` may instead be an `https://` URL to a `.txz` rootfs tarball; a
+URL rootfs is rejected for `lxc` / `pve-lxc`.
 
 Options:
 
@@ -112,6 +116,8 @@ Options:
 | `--config-mode MODE` | auto | Config delivery: `injection`, `cloudinit`, or `auto` |
 | `--unprivileged` | off | Run as an unprivileged LXC container (idmap-based). `lxc` and `pve-lxc`; kernel-gated and fail-closed — see below |
 | `--mac XX:XX:...` | auto | Override MAC address (VM modes only) |
+| `--kernel PATH` | in-image | Boot a caller-supplied kernel (VM modes only). A local path is copied into the instance state dir; an `https://` URL is fetched into it |
+| `--initrd PATH` | in-image | Boot a caller-supplied initramfs (VM modes only). A local path is copied into the instance state dir; an `https://` URL is fetched into it |
 | `--qemu-arg ARG` | none | Extra verbatim QEMU argument (VM modes only, repeatable; last occurrence wins) |
 | `--pve-arg "KEY: VALUE"` | none | Extra verbatim line appended to the PVE config (PVE modes only, repeatable) |
 | `--lxc-arg "KEY = VALUE"` | none | Extra verbatim line appended to the plain-LXC native config (plain LXC only, repeatable; last occurrence wins) |

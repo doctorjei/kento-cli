@@ -222,6 +222,44 @@ def test_info_override_absent_omitted_json_and_human(tmp_path):
     assert "Initramfs:" not in human
 
 
+# --------------------------------------------------------------------------- #
+# URL-VM (Phase B, Option 2): a VM instance created from an https:// .txz rootfs
+# stores the URL verbatim in kento-image and has NO kento-image-id. The
+# projection reads kento-image raw, so the URL renders as-is in the `image`
+# field, and the absent kento-image-id (never read by the CLI) does not crash.
+# --------------------------------------------------------------------------- #
+
+
+def test_info_url_image_renders_verbatim(tmp_path):
+    url = "https://host/rootfs.txz"
+    # A URL-sourced VM: kento-image is the URL; NO kento-image-id written.
+    d = _build_lxc(tmp_path / "vm", "urlvm", image=url, name="urlvm", mode="vm")
+    assert not (d / "kento-image-id").exists()
+    # The projection matches the library byte-for-byte on a URL image too.
+    golden = _info_golden(d, "urlvm", "vm", as_json=True, verbose=False)
+    inst = _load(d, "vm")
+    with mock.patch("kento_cli._projection.is_running", return_value=False):
+        wire = proj.instance_to_wire_dict(inst, verbose=False)
+        out = proj.instance_to_json(inst, verbose=False)
+    assert wire["image"] == url  # URL rendered verbatim, not re-parsed
+    assert out == golden
+
+
+def test_info_url_image_with_url_kernel(tmp_path):
+    # A URL rootfs + URL kernel/initrd override: kento-kernel/kento-initramfs
+    # hold the URLs verbatim and echo through the CLI-only override projection.
+    url = "https://host/rootfs.txz"
+    d = _build_lxc(tmp_path / "vm", "urlk", image=url, name="urlk", mode="vm",
+                   **{"kento-kernel": "https://h/vmlinuz\n",
+                      "kento-initramfs": "https://h/initramfs.img\n"})
+    inst = _load(d, "vm")
+    with mock.patch("kento_cli._projection.is_running", return_value=False):
+        wire = proj.instance_to_wire_dict(inst, verbose=False)
+    assert wire["image"] == url
+    assert wire["kernel"] == "https://h/vmlinuz"
+    assert wire["initramfs"] == "https://h/initramfs.img"
+
+
 def test_info_pve_lxc_mode_normalized(tmp_path):
     """A pve (pve-lxc) instance: mode normalizes to 'pve-lxc' in both wires."""
     d = _build_lxc(tmp_path / "lxc", "100", image="debian:bookworm",

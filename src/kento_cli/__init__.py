@@ -333,7 +333,9 @@ def _validate_ip_or_dhcp(value: str) -> str:
 
 def _add_create_args(parser, *, scope: str | None = None) -> None:
     """Add the common arguments shared by 'create' and 'run' subcommands."""
-    parser.add_argument("image", help="OCI image reference")
+    parser.add_argument("image",
+                        help="OCI image reference, or an https:// URL to a "
+                             ".txz rootfs (VM modes only)")
     parser.add_argument("--name", default=None, help="Instance name (auto-generated if omitted)")
     parser.add_argument("--network", default=None,
                         help="Network mode: bridge, bridge=<name>, host, usermode, none")
@@ -396,15 +398,17 @@ def _add_create_args(parser, *, scope: str | None = None) -> None:
     parser.add_argument("--kernel", default=None, dest="kernel", metavar="PATH",
                         help=(argparse.SUPPRESS if scope == "lxc" else
                               "Boot a caller-supplied kernel instead of the one in "
-                              "the image (VM modes only). The file is copied into the "
-                              "instance state dir; the unspecified side falls back to "
-                              "the in-image kernel."))
+                              "the image (VM modes only). A local path is copied into "
+                              "the instance state dir; an https:// URL is fetched into "
+                              "it. The unspecified side falls back to the in-image "
+                              "kernel."))
     parser.add_argument("--initrd", default=None, dest="initramfs", metavar="PATH",
                         help=(argparse.SUPPRESS if scope == "lxc" else
                               "Boot a caller-supplied initramfs instead of the one in "
-                              "the image (VM modes only). The file is copied into the "
-                              "instance state dir; the unspecified side falls back to "
-                              "the in-image initramfs."))
+                              "the image (VM modes only). A local path is copied into "
+                              "the instance state dir; an https:// URL is fetched into "
+                              "it. The unspecified side falls back to the in-image "
+                              "initramfs."))
     parser.add_argument("--config-mode", default="auto",
                         choices=["injection", "cloudinit", "auto"],
                         dest="config_mode",
@@ -959,6 +963,19 @@ def _dispatch_create(args, scope: str | None) -> None:
         print("Error: --kernel/--initrd are not supported for LXC/PVE-LXC; "
               "they apply only to VM modes (containers share the host kernel). "
               "Remove them or use 'kento vm create'.", file=sys.stderr)
+        sys.exit(1)
+
+    # A URL rootfs (an https:// image to a .txz) applies to VM modes only —
+    # containers assemble their rootfs from OCI layers, not a fetched tarball.
+    # Reject at the LXC scope with a friendly message BEFORE the kind.create
+    # call (core also rejects via ModeError on the procedural path; this is the
+    # friendly CLI-edge UX layer, same as --mac/--qemu-arg/--kernel). Detection
+    # is a cheap scheme-prefix check — a normal OCI ref like 'debian:12' has no
+    # http(s):// prefix, so it is never a false positive.
+    if scope == "lxc" and args.image.startswith(("http://", "https://")):
+        print("Error: a URL rootfs (https://...) is not supported for "
+              "LXC/PVE-LXC; it applies only to VM modes. "
+              "Use 'kento vm create'.", file=sys.stderr)
         sys.exit(1)
 
     # --lxc-arg targets plain-LXC's native config ONLY. On a PVE host (or
