@@ -102,6 +102,86 @@ class TestKernelInitrdCli:
         assert not mvm.called
 
 
+class TestUrlRootfsCli:
+    """URL-VM (Phase B, Option 2): an https:// .txz rootfs image + URL
+    --kernel/--initrd. Passthrough is unchanged (image/kernel/initramfs flow
+    raw to core); the only new CLI logic is the LXC URL-image friendly reject.
+    """
+
+    _URL = "https://host/rootfs.txz"
+
+    def test_url_rootfs_pass_through_on_vm(self):
+        # The URL image flows verbatim to VirtualMachine.create (no transform).
+        # image is the 2nd positional (create(name, image, ...)).
+        call = _run_create(["vm", "create", self._URL])
+        assert call.args[1] == self._URL
+
+    def test_url_kernel_initrd_pass_through_on_vm(self):
+        # URL kernel/initrd + URL rootfs all pass through raw.
+        call = _run_create([
+            "vm", "create",
+            "--kernel", "https://h/vmlinuz",
+            "--initrd", "https://h/initramfs.img",
+            self._URL])
+        assert call.args[1] == self._URL
+        assert call.kwargs["kernel"] == "https://h/vmlinuz"
+        assert call.kwargs["initramfs"] == "https://h/initramfs.img"
+
+    def test_url_image_rejected_on_lxc_create(self, capsys):
+        # Friendly reject fires BEFORE core: neither typed create is reached.
+        with patch("kento.SystemContainer.create") as msc, \
+             patch("kento.VirtualMachine.create") as mvm, \
+             pytest.raises(SystemExit) as exc:
+            main(["lxc", "create", self._URL])
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "a URL rootfs" in err
+        assert "VM modes" in err
+        assert not msc.called  # core create NEVER reached
+        assert not mvm.called
+
+    def test_http_image_rejected_on_lxc_create(self, capsys):
+        # http:// (not just https://) is caught by the same scheme check.
+        with patch("kento.SystemContainer.create") as msc, \
+             patch("kento.VirtualMachine.create") as mvm, \
+             pytest.raises(SystemExit) as exc:
+            main(["lxc", "create", "http://host/rootfs.txz"])
+        assert exc.value.code == 1
+        assert "a URL rootfs" in capsys.readouterr().err
+        assert not msc.called
+        assert not mvm.called
+
+    def test_url_image_rejected_on_lxc_run(self, capsys):
+        # `run` shares the create dispatch; same reject.
+        with patch("kento.SystemContainer.create") as msc, \
+             patch("kento.VirtualMachine.create") as mvm, \
+             pytest.raises(SystemExit) as exc:
+            main(["lxc", "run", self._URL])
+        assert exc.value.code == 1
+        assert "a URL rootfs" in capsys.readouterr().err
+        assert not msc.called
+        assert not mvm.called
+
+    def test_oci_ref_not_rejected_on_lxc_create(self):
+        # A normal OCI ref has no http(s):// prefix -> NOT a false positive.
+        # It reaches SystemContainer.create unchanged.
+        with patch("kento.pve.is_pve", return_value=False):
+            call = _run_create(["lxc", "create", "debian:12"])
+        assert call.args[1] == "debian:12"
+
+    def test_url_image_help_text_on_vm_create(self, capsys):
+        with pytest.raises(SystemExit) as exc:
+            main(["vm", "create", "--help"])
+        assert exc.value.code == 0
+        # argparse hard-wraps help text, so collapse whitespace before matching
+        # the multi-word phrases.
+        out = " ".join(capsys.readouterr().out.split())
+        # image positional documents the URL rootfs; --kernel/--initrd document
+        # the fetch-vs-copy split.
+        assert "https:// URL to a .txz rootfs (VM modes only)" in out
+        assert "an https:// URL is fetched into it" in out
+
+
 # ---------- existing pass-through flags ----------
 
 
