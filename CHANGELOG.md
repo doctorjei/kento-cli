@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.7.0.dev0]
+## [1.7.0.dev0] - 2026-07-01
 
 > **Synced dev line (continued).** kento (CLI) and kento-core advance together to
 > `1.7.0.dev0`, staying on the shared `.devN` pre-release line above the stable
